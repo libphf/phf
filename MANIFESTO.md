@@ -1,12 +1,26 @@
-# The PHF Manifesto: Pereira-Huffman Format
-### *Pure High-Fidelity*
+# The PHF Manifesto
 
 > *"In 1952, David A. Huffman published the mathematical foundation that made digital data compression possible — from JPEG and MP3 to PNG and GZIP. For over seven decades, humanity relied on his invention, yet no widespread image format bore his name. PHF was created to provide that overdue historical tribute and push information theory to the modern state of the art."*
 
 ---
 
-## 1. Origins & Genealogy
-**PHF** (*Pereira-Huffman Format*, also signifying *Pure High-Fidelity*) is the culmination of nearly two decades of research pursuing the ideal balance between **absolute mathematical fidelity (100% Lossless)** and **real-time computational throughput**.
+## 1. The Official Name & The Easter Egg
+To the industry, developer community, and specification bodies, **PHF** officially stands for:
+
+### **Pure High-Fidelity**
+It communicates the technical guarantee of the format: zero degradation, mathematically exact photon-level reconstruction ($\text{PSNR} = \infty$), and pure lossless transmission.
+
+However, embedded directly into the project's history and manifesto is an intentional **Easter Egg** — the authentic tribute from which the codec was born:
+
+### **Pereira • Huffman • Format**
+- **P — Pereira:** Honoring **Ygor D. L. Pereira**, whose 2008 academic research pioneered the N-Huffman order-1 context state graph.
+- **H — Huffman:** Giving long-overdue credit to **David A. Huffman** (1925–1999), whose foundational algorithm powers the digital world but was never credited in a mainstream file extension.
+- **F — Format (and Fast):** Built in pair-programming partnership with **Antigravity (Google DeepMind)** for extreme real-time throughput.
+
+---
+
+## 2. Origins & Genealogy
+**PHF** is the culmination of nearly two decades of research pursuing the ideal balance between **absolute mathematical fidelity (100% Lossless)** and **real-time computational throughput**.
 
 1. **The Theoretical Foundation (FA7, 2008):**
    The academic thesis by **Ygor D. L. Pereira** demonstrated that the structural limits of classical static Huffman coding could be transcended by modeling symbols as nodes in a directed order-1 state graph (**N-Huffman**): each encoded symbol dynamically establishes the statistical context for the subsequent symbol's probability tree.

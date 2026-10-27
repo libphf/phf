@@ -1,11 +1,11 @@
-# PHF — Pereira-Huffman Format
-### *The Pure High-Fidelity Lossless Image Format*
+# PHF — Pure High-Fidelity
+### *Next-Generation Ultra-Fast Lossless Image Format*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Status: Stable](https://img.shields.io/badge/Status-100%25%20Lossless-green.svg)](SPEC.md)
 [![Platform: Cross-Platform](https://img.shields.io/badge/Platform-x86__64%20%7C%20ARM64%20%7C%20WASM-orange.svg)](#building)
 
-**PHF** (*Pereira-Huffman Format* / *Pure High-Fidelity Format*) is a next-generation, high-performance, strictly lossless image codec.
+**PHF** (*Pure High-Fidelity*, with origins in the *Pereira-Huffman Format*) is a next-generation, high-performance, strictly lossless image codec.
 
 By combining order-1 context-adaptive Huffman coding (N-Huffman) with SIMD-vectorized Median Edge Detection (MED) and Package-Merge canonical length-limiting, PHF delivers **higher compression ratios than WebP Lossless** while operating at **300 to 400 MB/s** throughput.
 
