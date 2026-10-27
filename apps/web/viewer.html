@@ -145,6 +145,10 @@
                 <input type="file" id="fileInput" accept=".phf" style="display: none;">
             </div>
 
+            <button id="btnSample" style="width: 100%; padding: 10px; background: rgba(88, 166, 255, 0.12); border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; font-weight: 600; cursor: pointer; transition: all 0.2s;">
+                📸 Load 24 MP Sample (sample.phf)
+            </button>
+
             <h4 style="margin-top: 20px; font-size: 14px; color: var(--text-muted);">File Statistics</h4>
             <div class="stat-group">
                 <div class="stat-item">
@@ -189,6 +193,23 @@
         const sRaw = document.getElementById('s_raw');
         const sPhf = document.getElementById('s_phf');
         const sRatio = document.getElementById('s_ratio');
+
+        const btnSample = document.getElementById('btnSample');
+
+        btnSample.addEventListener('click', async () => {
+            try {
+                emptyHint.innerText = 'Fetching sample.phf...';
+                emptyHint.style.display = 'block';
+                canvas.style.display = 'none';
+                const resp = await fetch('sample.phf');
+                if (!resp.ok) throw new Error('sample.phf not found in web directory');
+                const blob = await resp.blob();
+                loadFile(blob);
+            } catch (e) {
+                alert(e.message);
+                emptyHint.innerText = 'Select or drop a .phf file to inspect';
+            }
+        });
 
         dropzone.addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', (e) => {
