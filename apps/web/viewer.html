@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PHF Web Viewer — Pereira-Huffman Format</title>
+    <style>
+        :root {
+            --bg-dark: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --accent: #58a6ff;
+            --green: #3fb950;
+            --text-main: #f0f6fc;
+            --text-muted: #8b949e;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            padding: 16px 24px;
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .badge {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent);
+            border: 1px solid rgba(88, 166, 255, 0.4);
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+        main {
+            flex: 1;
+            padding: 24px;
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        @media (max-width: 900px) {
+            main { grid-template-columns: 1fr; }
+        }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .dropzone {
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 32px 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 20px;
+        }
+        .dropzone:hover, .dropzone.dragover {
+            border-color: var(--accent);
+            background: rgba(88, 166, 255, 0.05);
+        }
+        .stat-group {
+            margin-top: 16px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .stat-item {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+        }
+        .stat-item .label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .stat-item .val {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--accent);
+            margin-top: 4px;
+        }
+        .stat-item .val.green { color: var(--green); }
+        .viewport-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 400px;
+            background: #000;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            position: relative;
+            overflow: auto;
+        }
+        canvas {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+        .empty-hint {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">
+            <h2>PHF Web Viewer</h2>
+            <span class="badge">WASM SIMD128</span>
+        </div>
+        <div style="font-size: 13px; color: var(--text-muted);">
+            Pereira-Huffman Format v1.0
+        </div>
+    </header>
+
+    <main>
+        <div class="card">
+            <h3 style="margin-bottom: 12px;">Open Image</h3>
+            <div class="dropzone" id="dropzone">
+                <p>Drag & drop <strong>.phf</strong> file here</p>
+                <p style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">or click to browse</p>
+                <input type="file" id="fileInput" accept=".phf" style="display: none;">
+            </div>
+
+            <h4 style="margin-top: 20px; font-size: 14px; color: var(--text-muted);">File Statistics</h4>
+            <div class="stat-group">
+                <div class="stat-item">
+                    <div class="label">Resolution</div>
+                    <div class="val" id="s_res">—</div>
+                </div>
+                <div class="stat-item">
+                    <div class="label">Decode Time</div>
+                    <div class="val green" id="s_time">—</div>
+                </div>
+                <div class="stat-item">
+                    <div class="label">Raw Size</div>
+                    <div class="val" id="s_raw">—</div>
+                </div>
+                <div class="stat-item">
+                    <div class="label">PHF Size</div>
+                    <div class="val" id="s_phf">—</div>
+                </div>
+                <div class="stat-item" style="grid-column: span 2;">
+                    <div class="label">Compression Ratio (Lossless)</div>
+                    <div class="val green" id="s_ratio">—</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="viewport-box" id="viewport">
+            <div class="empty-hint" id="emptyHint">Select or drop a .phf file to inspect</div>
+            <canvas id="viewCanvas" style="display: none;"></canvas>
+        </div>
+    </main>
+
+    <script type="module">
+        import { decodePHF } from './phf-view.js';
+
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const canvas = document.getElementById('viewCanvas');
+        const emptyHint = document.getElementById('emptyHint');
+
+        const sRes = document.getElementById('s_res');
+        const sTime = document.getElementById('s_time');
+        const sRaw = document.getElementById('s_raw');
+        const sPhf = document.getElementById('s_phf');
+        const sRatio = document.getElementById('s_ratio');
+
+        dropzone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) loadFile(e.target.files[0]);
+        });
+
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) loadFile(e.dataTransfer.files[0]);
+        });
+
+        async function loadFile(file) {
+            emptyHint.innerText = 'Decoding with WebAssembly...';
+            emptyHint.style.display = 'block';
+            canvas.style.display = 'none';
+
+            try {
+                const buf = await file.arrayBuffer();
+                const res = await decodePHF(buf);
+
+                canvas.width = res.width;
+                canvas.height = res.height;
+                const ctx = canvas.getContext('2d');
+                ctx.putImageData(res.imageData, 0, 0);
+
+                emptyHint.style.display = 'none';
+                canvas.style.display = 'block';
+
+                sRes.innerText = `${res.width}x${res.height}`;
+                sTime.innerText = `${res.decodeTimeMs.toFixed(1)} ms`;
+                sRaw.innerText = `${(res.originalSize / (1024*1024)).toFixed(2)} MB`;
+                sPhf.innerText = `${(res.compressedSize / (1024*1024)).toFixed(2)} MB`;
+                const savings = (1.0 - res.compressedSize / res.originalSize) * 100.0;
+                sRatio.innerText = `${res.ratio.toFixed(2)}x (-${savings.toFixed(1)}%)`;
+            } catch (err) {
+                alert('Decode Error: ' + err.message);
+                emptyHint.innerText = 'Error decoding file.';
+            }
+        }
+    </script>
+</body>
+</html>
