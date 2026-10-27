@@ -1,11 +1,12 @@
-# The PHF Manifesto (Pereira-Huffman Format)
+# The PHF Manifesto: Pereira-Huffman Format
+### *Pure High-Fidelity*
 
 > *"In 1952, David A. Huffman published the mathematical foundation that made digital data compression possible — from JPEG and MP3 to PNG and GZIP. For over seven decades, humanity relied on his invention, yet no widespread image format bore his name. PHF was created to provide that overdue historical tribute and push information theory to the modern state of the art."*
 
 ---
 
 ## 1. Origins & Genealogy
-**PHF** (*Pereira-Huffman Format*) is the culmination of nearly two decades of research pursuing the ideal balance between **absolute mathematical fidelity (100% Lossless)** and **real-time computational throughput**.
+**PHF** (*Pereira-Huffman Format*, also signifying *Pure High-Fidelity*) is the culmination of nearly two decades of research pursuing the ideal balance between **absolute mathematical fidelity (100% Lossless)** and **real-time computational throughput**.
 
 1. **The Theoretical Foundation (FA7, 2008):**
    The academic thesis by **Ygor D. L. Pereira** demonstrated that the structural limits of classical static Huffman coding could be transcended by modeling symbols as nodes in a directed order-1 state graph (**N-Huffman**): each encoded symbol dynamically establishes the statistical context for the subsequent symbol's probability tree.
