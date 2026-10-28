@@ -44,9 +44,10 @@ All pixel arithmetic is modulo 256.
 | 3 | `0x08` | `CRC32` | A 4-byte CRC-32 follows the payload (see 1.4). |
 | 4–7 | | | Reserved, must be `0`. |
 
-A v1 writer produces `0x0E` for RGB and `0x0F` for RGBA. Bits 0–2 are descriptive: the
-decoder takes the actual coding modes from the NHF3 packet header (section 2), and they
-must agree with it. Files written before bit 3 existed carry no CRC; files from early
+A v1 writer produces `0x0E` (RGB) or `0x0F` (RGBA) for the MED mode and `0x08` (RGB) or
+`0x09` (RGBA) for the palette mode (section 4). Bits 0–2 are descriptive: the decoder takes
+the actual coding modes from the NHF3 packet header (section 2), and they must agree with
+it. Files written before bit 3 existed carry no CRC; files from early
 encoder builds also carry `0x04`/`0x05` (the MED bit was not set) and are still valid.
 
 ### 1.3 Size Limits
@@ -78,7 +79,7 @@ A decoder must check, in this order:
 | :---: | :---: | :---: | :--- | :--- |
 | 0 | 4 | ASCII | `magic` | `"NHF3"`. |
 | 4 | 1 | u8 | `version` | `1`. |
-| 5 | 1 | u8 | `mode` | bit 0: P-frame (must be 0 in PHF); bits 1–2: predictor (`0` none, `1` left, `2` MED, `3` palette); bit 3: color decorrelation. PHF v1 writers use `0x0C` (MED + decorrelation). |
+| 5 | 1 | u8 | `mode` | bit 0: P-frame (must be 0 in PHF); bits 1–2: predictor (`0` none, `1` left, `2` MED, `3` palette); bit 3: color decorrelation. PHF v1 writers use `0x0C` (MED + decorrelation) or `0x06` (palette, section 4). |
 | 6 | 2 | u16 BE | `width` | |
 | 8 | 2 | u16 BE | `height` | |
 | 10 | 1 | u8 | `ch` | Channel count (3 or 4 in PHF). |
@@ -88,9 +89,9 @@ The plane streams follow, concatenated in plane order. The sum of `plane_len` pl
 header must equal `payload_size` exactly. Each plane can be decoded independently once its
 bytes are available.
 
-PHF v1 writers only produce predictor `2` with decorrelation. The reference decoder also
-accepts predictors `0`/`1` from the NHF3 engine; the palette mode (`3`) is not part of this
-specification, and independent decoders may reject it.
+PHF v1 writers produce predictor `2` with decorrelation (sections 2.2–3) or predictor `3`
+without it (section 4). The reference decoder also accepts predictors `0`/`1` from the NHF3
+engine; independent decoders may reject those.
 
 ### 2.2 Planes and Color Transform
 
@@ -191,13 +192,66 @@ sequence, consecutive symbols always differ.
 
 ---
 
-## 4. Streaming Notes
+## 4. Palette Mode (predictor `3`)
+
+Each pixel is coded whole, as an index into the image's own list of colours, with the same
+order-1 N-Huffman model as section 3 but over indices instead of bytes. It suits graphics,
+screenshots and UI; for photos the MED planes are smaller.
+
+The packet header has `mode = 0x06` (predictor 3, no decorrelation). The first plane length
+holds the whole palette stream and the other `ch − 1` lengths are `0`.
+
+### 4.1 Layout
+
+```
+P          : u24 BE        number of colours, 1 <= P <= w·h
+palette    : P · ch bytes  colour j is bytes [j·ch, (j+1)·ch), in R, G, B(, A) order
+if P == 1  : nothing else follows (every pixel is colour 0)
+otherwise  : a bitstream (MSB-first, zero-padded to a byte) with b = bits(P − 1) = ⌊log2(P − 1)⌋ + 1:
+  first    : b bits        first index (< P)
+  rle      : 1 bit         as in 3.1, followed by the two run tables when set
+  fb_mode  : 2 bits        0 = no fallback; 1 = fallback indices are raw b-bit values;
+                           2 = fallback code table (3.2) over indices 0..P−1, only if P <= 256;
+                           3 = invalid
+  if fb_mode == 2: code table (3.2)
+  contexts : P descriptors, for c = 0..P−1:
+             used : 1 bit
+             if used: kind : 2 bits
+                 0 = SINGLE   : idx : b bits (< P)
+                 1 = OWN      : index code table (4.2)
+                 2 = FALLBACK : uses the fallback (requires fb_mode != 0)
+                 3 = invalid
+  indices  : as in 3.3 (rle = 0) or 3.4 (rle = 1), with indices for symbols and the
+             previous index as the context; run table t = (index != 0) ? 1 : 0
+```
+
+Pixel `i` is `palette[index_i]`. An RGB image decoded into a 4-byte stride gets an alpha
+of 255, as in the MED mode.
+
+### 4.2 Index Code Table
+
+Like 3.2, widened to `b`-bit indices:
+
+```
+k − 1      : b bits        k = number of coded indices, 2 <= k <= min(P, 16384)
+k entries, in increasing index order:
+  gap      : Elias-gamma   index − previous index (previous starts at −1); m <= b
+  len      : 4 bits        1..15
+```
+
+The lengths must form a complete prefix code; codes are canonical (3.2) over the listed
+indices.
+
+---
+
+## 5. Streaming Notes
 
 - **Header probe:** the first 20 bytes give width, height, channel count, the required
   output size (`width · height · stride`) and the total file size, so a receiver can
   allocate buffers before the rest arrives (`phf_probe_memory()`).
 - **Independent planes:** after `20 + 11 + 4·ch` bytes the receiver knows where each plane
-  starts and ends, and each plane decodes on its own. The reference API
+  starts and ends, and each plane decodes on its own (MED mode; the palette mode is a
+  single stream). The reference API
   (`phf_decode_memory()`) currently needs the complete file; incremental decoding is a
   possible future API, not something v1 provides.
 - **Inter-frame (P-frame) coding** exists in the underlying NHF3 engine (`nhf3_encode` with

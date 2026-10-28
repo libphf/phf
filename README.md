@@ -9,6 +9,16 @@
 
 By combining order-1 context-adaptive Huffman coding (N-Huffman) with SIMD-vectorized Median Edge Detection (MED) and length-limited (15-bit) canonical codes, PHF delivered **higher compression ratios than WebP Lossless** at **~300–400 MB/s** in the benchmark below.
 
+PHF has two coding modes, and the encoder can pick between them:
+
+| Mode | Best for | How |
+| :--- | :--- | :--- |
+| **MED** | photos, camera, video | R−G/G/B−G planes, MED prediction, N-Huffman per plane |
+| **Palette** | graphics, screenshots, UI, few colours | each pixel coded whole as an index into the image's colours, with the same N-Huffman model (the monograph's "compression by pixel") |
+
+On graphics the palette mode is about 70–75% smaller than MED and decodes 2–3× faster; on
+photos MED wins. Files say which mode they use, so decoders need no option.
+
 ---
 
 ## Benchmark: High-Resolution Photographic Dataset (Unsplash)
@@ -132,8 +142,9 @@ Writes `apps/web/phf.js` and `apps/web/phf.wasm` (SIMD128 enabled). After rebuil
 ```bash
 ctest --test-dir build -C Release --output-on-failure
 ```
-Runs round-trips over many sizes and image types (RGB/RGBA, stride 3/4), header and error
-checks, CRC detection, a corruption fuzz, file I/O, and decoding of `apps/web/sample.phf`.
+Runs round-trips over many sizes and image types (RGB/RGBA, stride 3/4) in every mode and
+effort, mode-selection checks, header and error checks, CRC detection, a corruption fuzz of
+both modes, file I/O, and decoding of `apps/web/sample.phf`.
 CI runs the suite on Linux (with OpenMP and with sanitizers), macOS and Windows.
 
 ```bash
@@ -151,8 +162,12 @@ PHF, WebP Lossless, PNG-6 and PNG-1, plus the machine and thread settings used.
 Requires the shared library (see above; or point `PHF_LIB` at it) and `pip install opencv-python numpy`.
 
 ```bash
-# Encode an image to PHF (8-bit RGB, RGBA or grayscale; grayscale is stored as RGB)
+# Encode an image to PHF (8-bit RGB, RGBA or grayscale; grayscale is stored as RGB).
+# The default mode is auto: it also tries the palette mode when the image has at most
+# 4096 colours and keeps the smaller file.
 python apps/cli/phf_tool.py encode photo.png photo.phf
+python apps/cli/phf_tool.py encode logo.png logo.phf --mode=palette   # or --mode=med
+python apps/cli/phf_tool.py encode frame.png frame.phf --fast         # one encode, no trials
 
 # Decode a PHF image back to PNG
 python apps/cli/phf_tool.py decode photo.phf photo.png
@@ -171,9 +186,16 @@ JPEG inputs work too: PHF stores the decoded JPEG pixels losslessly (it cannot u
 ```c
 #include "phf.h"
 
-// Encode RGB image to a .phf file (max 65535 px per side, 2^26 px total)
-int err = phf_write_file("output.phf", rgb_buffer, width, height, 3);
+// Encode RGB image to a .phf file (max 65535 px per side, 2^26 px total).
+// NULL options = { PHF_MODE_AUTO, PHF_EFFORT_BEST }: best size for files.
+int err = phf_write_file("output.phf", rgb_buffer, width, height, 3, NULL);
 if (err != PHF_OK) { /* PHF_ERR_* code */ }
+
+// Streaming: fix the mode up front and encode once per frame.
+phf_encode_options_t live = { PHF_MODE_MED, PHF_EFFORT_FAST };   // PALETTE for screen content
+size_t size;
+uint8_t *frame_phf = phf_encode_memory(rgb_frame, width, height, 3, &live, &size);
+phf_free(frame_phf);
 
 // Read and decode a .phf file from disk (CRC-32 is verified when present)
 phf_info_t info;
