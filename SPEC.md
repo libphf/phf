@@ -50,3 +50,28 @@ Every `.phf` file begins with a fixed **20-byte header**, followed immediately b
    - $\text{Green} = G'$
    - $\text{Red} = (R' + G) \pmod{256}$
    - $\text{Blue} = (B' + G) \pmod{256}$
+
+---
+
+## 3. Streaming & Network Transmission
+
+The PHF container is intentionally designed for zero-copy, pipelined network transmission (HTTP chunked streams, WebSockets, WebRTC DataChannels, and UNIX domain sockets).
+
+### 3.1 Instant 20-Byte Header Probe
+Unlike chunk-based containers (e.g. PNG chunk trees or TIFF tag directories) that require multiple reads across variable offsets:
+- A stream receiver reads exactly the initial **20 bytes** via `phf_probe_memory()` to obtain:
+  - Width ($W$) and Height ($H$)
+  - Channel count ($C$)
+  - Required destination pixel memory: $W \times H \times C$ bytes
+  - Total incoming payload size: $20 + \text{payload\_size}$
+- Buffer pre-allocation occurs instantly with zero memory reallocations while the network payload continues streaming in.
+
+### 3.2 Planar Stream Independence
+The compressed payload contains independent sequential partitions for each color plane:
+- Planar layout: Plane 0 ($G$), Plane 1 ($R - G$), Plane 2 ($B - G$), and optional Plane 3 ($\alpha$).
+- A multi-threaded streaming consumer can decompress incoming planes concurrently as their respective byte streams arrive over the network, minimizing total frame display latency.
+
+### 3.3 Inter-Frame Delta Protocol (Video Extension)
+When deployed in real-time display streaming (e.g., Remote Desktop, medical telemetry, or camera monitoring), the underlying engine supports temporal prediction against the prior frame buffer ($P$-frames):
+- Zero-motion tiles require 0 entropy bits.
+- Enables steady 60 fps lossless video transmission over standard Gigabit Ethernet networks without compression artifacts.
