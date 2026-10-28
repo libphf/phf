@@ -1,0 +1,57 @@
+cmake_minimum_required(VERSION 3.16)
+project(phf VERSION 1.0.0 LANGUAGES C)
+
+option(PHF_BUILD_SHARED "Build libphf as a shared library (needed by the Python CLI)" ON)
+option(PHF_OPENMP "Encode/decode color planes in parallel with OpenMP when available" ON)
+option(PHF_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+option(PHF_BUILD_TESTS "Build the test suite" ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+if(PHF_BUILD_SHARED)
+  set(PHF_LIB_TYPE SHARED)
+else()
+  set(PHF_LIB_TYPE STATIC)
+endif()
+
+add_library(phf ${PHF_LIB_TYPE} libphf/src/phf.c libphf/src/huff.c)
+target_include_directories(phf PUBLIC libphf/include)
+set_target_properties(phf PROPERTIES C_VISIBILITY_PRESET hidden)
+if(WIN32 AND PHF_BUILD_SHARED)
+  target_compile_definitions(phf PRIVATE PHF_BUILD_DLL)
+endif()
+
+if(MSVC)
+  target_compile_options(phf PRIVATE /W3)
+else()
+  target_compile_options(phf PRIVATE -Wall -Wextra)
+endif()
+
+if(PHF_OPENMP)
+  find_package(OpenMP COMPONENTS C)
+  if(OpenMP_C_FOUND)
+    target_link_libraries(phf PRIVATE OpenMP::OpenMP_C)
+    message(STATUS "libphf: OpenMP enabled")
+  else()
+    message(STATUS "libphf: OpenMP not found, building single-threaded")
+  endif()
+endif()
+
+if(PHF_SANITIZE AND NOT MSVC)
+  set(PHF_SAN_FLAGS -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+  target_compile_options(phf PUBLIC ${PHF_SAN_FLAGS})
+  target_link_options(phf PUBLIC ${PHF_SAN_FLAGS})
+endif()
+
+if(PHF_BUILD_TESTS)
+  enable_testing()
+  add_executable(test_phf tests/test_phf.c)
+  target_link_libraries(test_phf PRIVATE phf)
+  add_test(NAME test_phf
+           COMMAND test_phf ${CMAKE_CURRENT_SOURCE_DIR}/apps/web/sample.phf
+           WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+endif()

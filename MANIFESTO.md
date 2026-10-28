@@ -30,9 +30,9 @@ However, embedded directly into the project's history and manifesto is an intent
 
 2. **Modern Systems Engineering (2026):**
    Through a pair-programming collaboration between **Ygor Pereira** and **Antigravity (Google DeepMind)**, the architecture was re-engineered for modern parallel processors:
-   - Length-limited canonical Huffman trees constrained via *Package-Merge* (maximum 15 bits).
-   - Meta-compression of code-length tables via RLE combined with a secondary code-length Huffman tree.
-   - Vectorized geometric spatial prediction (MED — *Median Edge Detector*) implemented with **SIMD intrinsics (SSE2, AVX2, ARM NEON, and WASM SIMD128)**.
+   - Length-limited canonical Huffman codes (maximum 15 bits, using the JPEG Annex K.3 length adjustment).
+   - Compact sparse code-length tables: Elias-gamma symbol gaps plus 4-bit lengths, so a table costs bits only for the symbols it actually uses.
+   - Vectorized geometric spatial prediction (MED — *Median Edge Detector*) implemented with **SIMD intrinsics (SSE2, ARM NEON, and WASM SIMD128)**.
    - Exact per-context cost optimization: dynamic selection between custom tables, shared global fallback tables, and deterministic 0-bit immediate states.
 
 ---
@@ -43,10 +43,10 @@ However, embedded directly into the project's history and manifesto is an intent
 Zero pixels are discarded, quantized, or approximated. When a camera captures raw sensor data in 24-bit or 32-bit color, PHF preserves every photon upon reconstruction. $\text{PSNR} = \infty$, $\text{MSE} = 0$, maximum pixel error $= 0$.
 
 ### II. High-Throughput Production (> 300 MB/s)
-The primary obstacle of modern lossless formats (such as WebP Lossless) has been compression latency. PHF was architected to be up to **37× faster than WebP Lossless** and **20× faster than PNG**, processing hundreds of megabytes per second on standard consumer hardware.
+The primary obstacle of modern lossless formats (such as WebP Lossless) has been compression latency. In the author's benchmark PHF encoded **37× faster than WebP Lossless** and **20× faster than PNG-6**, processing hundreds of megabytes per second on standard consumer hardware.
 
 ### III. Instant & Universal Decoding
-PHF is lightweight enough to decode in real time across embedded microcontrollers (ESP32), single-board computers (Raspberry Pi 4), and modern web browsers via WebAssembly SIMD128 at over **400 MB/s**.
+PHF's decoder is plain C99 with optional SIMD, so it runs on desktop and server CPUs, single-board computers such as the Raspberry Pi, and modern web browsers via WebAssembly SIMD128. It needs about 600 KB of code tables plus full-frame buffers, which rules out small microcontrollers without external RAM.
 
 ### IV. Free & Open to Humanity (MIT License)
 We dedicate this algorithm and format to the global community under the permissive MIT License. Free of software patents, free of licensing royalties, free of restrictive consortium fees. It belongs to developers, photographers, researchers, and open-source creators worldwide.

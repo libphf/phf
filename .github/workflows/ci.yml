@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: release (OpenMP)
+            flags: -DCMAKE_BUILD_TYPE=Release
+          - os: ubuntu-latest
+            name: sanitizers
+            flags: -DCMAKE_BUILD_TYPE=Debug -DPHF_SANITIZE=ON -DPHF_OPENMP=OFF
+          - os: macos-latest
+            name: release
+            flags: -DCMAKE_BUILD_TYPE=Release
+          - os: windows-latest
+            name: release (MSVC)
+            flags: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.flags }}
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure

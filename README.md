@@ -7,13 +7,18 @@
 
 **PHF** (**P**ure **H**igh-Fidelity **F**ormat, with roots in the **P**ereira-**H**uffman **F**ormat) is a next-generation, high-performance, strictly lossless image codec.
 
-By combining order-1 context-adaptive Huffman coding (N-Huffman) with SIMD-vectorized Median Edge Detection (MED) and Package-Merge canonical length-limiting, PHF delivers **higher compression ratios than WebP Lossless** while operating at **300 to 400 MB/s** throughput.
+By combining order-1 context-adaptive Huffman coding (N-Huffman) with SIMD-vectorized Median Edge Detection (MED) and length-limited (15-bit) canonical codes, PHF delivered **higher compression ratios than WebP Lossless** at **~300–400 MB/s** in the benchmark below.
 
 ---
 
 ## Benchmark: High-Resolution Photographic Dataset (Unsplash)
 
 Tested across 7 ultra-high-resolution real-world photographs (from 4.4 MP up to 36.2 MP Full-Frame DSLRs), totaling **370.4 MB of raw 24-bit RGB pixel data**:
+
+> **About these numbers:** they were measured by the author; the CPU, the PHF thread count
+> (libphf can use OpenMP for its color planes) and the codec versions were not recorded.
+> Re-run the comparison on your own hardware and images with
+> [`bench/bench.py`](#testing--benchmarking), which checks every decode bit-exact.
 
 | Codec | Total Size | Compression Ratio | Space Savings | Total Encode Time | Encode Throughput | Total Decode Time | Decode Throughput | Lossless Verified |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -39,20 +44,21 @@ Because PHF inherits the architecture of the **NHF3 video streaming engine**, it
 
 | Streaming Metric | PNG-6 | WebP-LL | 🥇 PHF |
 | :--- | :---: | :---: | :---: |
-| **Encode Latency (1080p 24-bit)** | ~160 ms *(cannot do 30 fps)* | ~300 ms *(cannot do 15 fps)* | **~8 ms *(solid 60+ fps)*** |
+| **Encode Latency (1080p 24-bit, 6.2 MB)** | ~415 ms *(~2 fps)* | ~780 ms *(~1 fps)* | **~21 ms *(~45 fps)*** |
 | **Encode Throughput** | 15 MB/s | 8 MB/s | **290 MB/s** |
 | **Decode Throughput** | 223 MB/s | 144 MB/s | **> 400 MB/s** |
 | **Instant Header Probe** | Variable chunks (IHDR/IDAT) | RIFF header parse | **Fixed 20-byte probe (0 allocations)** |
-| **Pipelined Planar Streams** | ❌ Monolithic Deflate stream | ❌ Monolithic VP8L stream | **✅ Independent channel streams** |
-| **Inter-Frame Delta (P-frames)** | ❌ Unsupported | ❌ Unsupported | **✅ Native in core engine** |
+| **Planar Streams** | ❌ Monolithic Deflate stream | ❌ Monolithic VP8L stream | **✅ Length-prefixed, independently decodable planes** |
+| **Inter-Frame Delta (P-frames)** | ❌ Unsupported | ❌ Unsupported | **⚠️ In the NHF3 core engine only (not in `.phf` v1)** |
+| **Integrity Check** | ✅ CRC-32 per chunk | ⚠️ None for the image data | **✅ CRC-32 of the payload** |
 
 ### Streaming Architectural Strengths:
-1. **Sub-Frame Encode Latency:** PHF encodes a 1080p frame in under 8 ms and a 720p frame in ~3 ms. This allows continuous lossless frame streaming at 60 fps with zero frame drops on everyday consumer CPUs.
+1. **Low Encode Latency:** at the 290 MB/s measured above, a 1080p frame (6.2 MB) encodes in about 21 ms and a 720p frame (2.8 MB) in about 10 ms: enough for lossless 30 fps at 1080p or 60 fps at 720p. Latencies in the table are frame size ÷ measured throughput.
 2. **20-Byte Instant Probe:** Over TCP sockets, HTTP chunked streams, or WebRTC data channels, the receiver only needs the first 20 bytes to immediately ascertain resolution, channel count, and payload size—pre-allocating GPU/Canvas buffers before the payload finishes downloading.
-3. **Independent Planar Pipelining:** Color planes ($G$, $R-G$, $B-G$, and $\alpha$) are serialized in independent sequential partitions. A parallel receiver can start entropy decoding and inverse spatial reconstruction as soon as each plane arrives.
+3. **Independent Planes:** the color planes ($R-G$, $G$, $B-G$, and $\alpha$) are stored as separate length-prefixed streams, so each can be entropy-decoded on its own (libphf decodes them in parallel when built with OpenMP). The format allows starting on a plane as soon as it arrives; the current `phf_decode_memory()` API still takes the complete file.
 4. **Target Applications:**
    - **High-Fidelity Remote Desktop / VNC:** Crisp, uncorrupted text and UI streaming without JPEG/H.264 chroma blur or ringing artifacts.
-   - **Medical & Scientific Imaging:** Live transmission of endoscopy, surgical, and radiology feeds where mathematical losslessness is legally required.
+   - **Medical & Scientific Imaging:** Live transmission of endoscopy, surgical, and radiology feeds where mathematical losslessness is required; the payload CRC-32 detects corrupted files instead of silently decoding them.
    - **High-Speed Industrial Inspection:** Machine vision camera feeds operating at 60 to 120 FPS.
 
 ---
@@ -62,19 +68,26 @@ Because PHF inherits the architecture of the **NHF3 video streaming engine**, it
 ```text
 phf/
 ├── MANIFESTO.md          # Origins, vision, and tribute to David Huffman
-├── SPEC.md               # Binary format specification v1.0
+├── SPEC.md               # Byte-level format specification v1.0
 ├── LICENSE               # Permissive MIT License
+├── CMakeLists.txt        # Cross-platform build (library + tests)
 │
 ├── libphf/               # Core C Library
 │   ├── include/
-│   │   └── phf.h         # Clean public C API
+│   │   └── phf.h         # Public C API, flags and error codes
 │   ├── src/
 │   │   ├── phf.c         # Encoder, decoder, and container logic
-│   │   ├── huff.c / .h   # Canonical 15-bit Package-Merge Huffman tree
-│   │   ├── bitio.h       # Branchless bitstream reader and writer
-│   │   └── phf_simd.h    # SIMD intrinsics (SSE2, AVX2, ARM NEON, WASM)
-│   ├── build.bat         # Native Windows MSVC build (phf.dll / phf.lib)
-│   └── build_wasm.bat    # WebAssembly build (phf.js / phf.wasm)
+│   │   ├── huff.c / .h   # Canonical length-limited (15-bit) Huffman codes
+│   │   ├── bitio.h       # Bitstream reader and writer
+│   │   ├── nhf3_core.h   # Internal NHF3 engine API
+│   │   └── phf_simd.h    # SIMD prediction (SSE2, ARM NEON, WASM SIMD128, scalar)
+│   ├── build.bat         # Windows MSVC shortcut (phf.dll)
+│   └── build_wasm.bat/.sh# WebAssembly build -> apps/web/phf.js + phf.wasm
+│
+├── tests/
+│   └── test_phf.c        # Round-trip, container, CRC and corruption tests
+├── bench/
+│   └── bench.py          # Reproducible PHF vs PNG vs WebP Lossless benchmark
 │
 └── apps/
     ├── cli/
@@ -88,34 +101,68 @@ phf/
 
 ## Building libphf
 
-### Windows (MSVC):
+### Any platform (CMake 3.16+):
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+Produces `libphf.so` / `libphf.dylib` / `phf.dll` in `build/` (`build/Release/` with Visual Studio).
+OpenMP is used automatically when the compiler provides it (`-DPHF_OPENMP=OFF` to disable).
+Other options: `-DPHF_BUILD_SHARED=OFF` (static library), `-DPHF_SANITIZE=ON` (ASan + UBSan).
+
+### Windows shortcut (MSVC):
 ```cmd
 cd libphf
 build.bat
 ```
-Produces `phf.dll` and `phf.lib`.
+Produces `libphf/phf.dll` and `phf.lib`. Finds Visual Studio through `vswhere` if `cl.exe` is not already in `PATH`.
 
 ### WebAssembly (Emscripten):
-```cmd
-cd libphf
-build_wasm.bat
+```bash
+source /path/to/emsdk/emsdk_env.sh   # or emsdk_env.bat on Windows
+./libphf/build_wasm.sh               # or libphf\build_wasm.bat
 ```
-Produces `phf.js` and `phf.wasm` (SIMD128 enabled).
+Writes `apps/web/phf.js` and `apps/web/phf.wasm` (SIMD128 enabled). After rebuilding, bump
+`BUILD_VERSION` in `phf-view.js` and the `?v=` strings in `viewer.html` to bust browser caches.
+
+---
+
+## Testing & Benchmarking
+
+```bash
+ctest --test-dir build -C Release --output-on-failure
+```
+Runs round-trips over many sizes and image types (RGB/RGBA, stride 3/4), header and error
+checks, CRC detection, a corruption fuzz, file I/O, and decoding of `apps/web/sample.phf`.
+CI runs the suite on Linux (with OpenMP and with sanitizers), macOS and Windows.
+
+```bash
+pip install opencv-python numpy
+python bench/bench.py photo1.png photo2.png ...
+OMP_NUM_THREADS=1 python bench/bench.py photo1.png ...   # single-threaded PHF
+```
+Prints a Markdown table (size, ratio, encode/decode time and MB/s, bit-exact check) for
+PHF, WebP Lossless, PNG-6 and PNG-1, plus the machine and thread settings used.
 
 ---
 
 ## Quickstart (CLI)
 
+Requires the shared library (see above; or point `PHF_LIB` at it) and `pip install opencv-python numpy`.
+
 ```bash
-# Encode an image to PHF
-python apps/cli/phf_tool.py encode photo.jpg photo.phf
+# Encode an image to PHF (8-bit RGB, RGBA or grayscale; grayscale is stored as RGB)
+python apps/cli/phf_tool.py encode photo.png photo.phf
 
 # Decode a PHF image back to PNG
 python apps/cli/phf_tool.py decode photo.phf photo.png
 
-# Display image metadata and compression statistics
+# Show metadata and verify the file decodes and its CRC matches
 python apps/cli/phf_tool.py info photo.phf
 ```
+
+JPEG inputs work too: PHF stores the decoded JPEG pixels losslessly (it cannot undo the JPEG's own loss).
+16-bit images are rejected rather than truncated.
 
 ---
 
@@ -124,10 +171,11 @@ python apps/cli/phf_tool.py info photo.phf
 ```c
 #include "phf.h"
 
-// Encode RGB image to a .phf file
+// Encode RGB image to a .phf file (max 65535 px per side, 2^26 px total)
 int err = phf_write_file("output.phf", rgb_buffer, width, height, 3);
+if (err != PHF_OK) { /* PHF_ERR_* code */ }
 
-// Read and decode a .phf file from disk
+// Read and decode a .phf file from disk (CRC-32 is verified when present)
 phf_info_t info;
 uint8_t *decoded_rgb = phf_read_file("output.phf", &info);
 
@@ -135,6 +183,10 @@ if (decoded_rgb) {
     // Process pixels: info.width, info.height, info.channels
     phf_free(decoded_rgb);
 }
+
+// Or decode from memory straight into an RGBA buffer (alpha = 255 for RGB files)
+int rc = phf_decode_memory(file_bytes, file_size, rgba, info.width, info.height, 4);
+if (rc == PHF_ERR_CHECKSUM) { /* file is corrupted */ }
 ```
 
 ---
@@ -143,6 +195,7 @@ if (decoded_rgb) {
 
 - **Ygor D. L. Pereira** — Original N-Huffman concept and academic research (FA7, 2008).
 - **Antigravity (Google DeepMind)** — Codec systems engineering, SIMD vectorization, and WebAssembly architecture.
+- **Claude (Anthropic)** — Code review, container hardening and CRC-32 integrity, byte-level specification, test suite, CMake/CI, and benchmark tooling.
 - **David A. Huffman** (1925–1999) — In enduring tribute to the father of minimum redundancy coding.
 
 ---

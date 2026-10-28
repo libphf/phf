@@ -4,7 +4,19 @@
  * License: MIT
  */
 
-const BUILD_VERSION = "1.0.1";
+const BUILD_VERSION = "1.0.2";
+
+const PHF_ERRORS = {
+    [-1]: "invalid argument",
+    [-2]: "not a PHF file",
+    [-3]: "unsupported PHF version",
+    [-4]: "dimension mismatch",
+    [-5]: "file is truncated",
+    [-6]: "stride smaller than channel count",
+    [-7]: "corrupt payload",
+    [-8]: "checksum mismatch (file is corrupted)",
+    [-9]: "out of memory",
+};
 let phfModuleInstance = null;
 let phfModulePromise = null;
 
@@ -56,11 +68,22 @@ export async function decodePHF(arrayBuffer) {
     const height = dv.getUint32(12, true);
     const payloadSize = dv.getUint32(16, true);
 
-    const srcPtr = mod._malloc(n);
-    mod.HEAPU8.set(u8, srcPtr);
+    if (version !== 1) throw new Error(`Unsupported PHF version ${version}`);
+    if (channels !== 3 && channels !== 4) throw new Error(`Unsupported channel count ${channels}`);
+    // Same limits as the encoder (PHF_MAX_DIM / PHF_MAX_PIXELS); also keeps
+    // outBytes far below 2^32 so it cannot wrap when passed to _malloc.
+    if (width === 0 || height === 0 || width > 65535 || height > 65535 || width * height > 67108864) {
+        throw new Error(`Invalid PHF dimensions ${width}x${height}`);
+    }
 
     const outBytes = width * height * 4; // Always decode to 4-channel RGBA for Canvas
-    const dstPtr = mod._malloc(outBytes);
+    const srcPtr = mod._malloc(n);
+    const dstPtr = srcPtr ? mod._malloc(outBytes) : 0;
+    if (!srcPtr || !dstPtr) {
+        if (srcPtr) mod._free(srcPtr);
+        throw new Error("PHF decoding failed: out of memory");
+    }
+    mod.HEAPU8.set(u8, srcPtr);
 
     const t0 = performance.now();
     // Call into WASM decoder with stride = 4 (Canvas RGBA)
@@ -70,7 +93,7 @@ export async function decodePHF(arrayBuffer) {
     if (rc !== 0) {
         mod._free(srcPtr);
         mod._free(dstPtr);
-        throw new Error(`PHF decoding failed with error code: ${rc}`);
+        throw new Error(`PHF decoding failed: ${PHF_ERRORS[rc] || "unknown error"} (code ${rc})`);
     }
 
     const decodedU8 = new Uint8Array(mod.HEAPU8.buffer, dstPtr, outBytes);
