@@ -200,7 +200,7 @@
     </main>
 
     <script type="module">
-        import { decodePHF } from './phf-view.js';
+        import { decodePHF } from './phf-view.js?v=1.0.1';
 
         const dropzone = document.getElementById('dropzone');
         const fileInput = document.getElementById('fileInput');
@@ -220,7 +220,7 @@
                 emptyHint.innerText = 'Fetching sample.phf...';
                 emptyHint.style.display = 'block';
                 canvas.style.display = 'none';
-                const resp = await fetch('sample.phf');
+                const resp = await fetch('sample.phf?v=1.0.1');
                 if (!resp.ok) throw new Error('sample.phf not found in web directory');
                 const blob = await resp.blob();
                 loadFile(blob);

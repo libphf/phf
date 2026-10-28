@@ -4,6 +4,7 @@
  * License: MIT
  */
 
+const BUILD_VERSION = "1.0.1";
 let phfModuleInstance = null;
 let phfModulePromise = null;
 
@@ -11,27 +12,23 @@ export async function getPHFModule() {
     if (phfModuleInstance) return phfModuleInstance;
     if (!phfModulePromise) {
         phfModulePromise = new Promise((resolve, reject) => {
-            if (typeof window.PHFModule !== 'function') {
-                const script = document.createElement('script');
-                script.src = new URL('phf.js', import.meta.url).href;
-                script.onload = () => {
-                    window.PHFModule({
-                        locateFile: (path) => new URL(path, import.meta.url).href
-                    }).then(mod => {
-                        phfModuleInstance = mod;
-                        resolve(mod);
-                    }).catch(reject);
-                };
-                script.onerror = reject;
-                document.head.appendChild(script);
-            } else {
+            const initModule = () => {
+                if (typeof window.PHFModule !== 'function') {
+                    return reject(new Error('PHFModule initialization failed'));
+                }
                 window.PHFModule({
-                    locateFile: (path) => new URL(path, import.meta.url).href
+                    locateFile: (path) => new URL(`${path}?v=${BUILD_VERSION}`, import.meta.url).href
                 }).then(mod => {
                     phfModuleInstance = mod;
                     resolve(mod);
                 }).catch(reject);
-            }
+            };
+
+            const script = document.createElement('script');
+            script.src = new URL(`phf.js?v=${BUILD_VERSION}`, import.meta.url).href;
+            script.onload = initModule;
+            script.onerror = reject;
+            document.head.appendChild(script);
         });
     }
     return phfModulePromise;

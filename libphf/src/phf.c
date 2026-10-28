@@ -1492,7 +1492,7 @@ PHF_API int phf_decode_memory(const uint8_t *phf_data, size_t phf_size, uint8_t 
     }
     if (stride == 0) stride = info.channels;
     if (stride < info.channels) {
-        return -4; /* Stride cannot be less than source channels */
+        return -6; /* Stride cannot be less than source channels */
     }
     if (phf_size < 20 + info.payload_size) {
         return -5; /* Truncated */
