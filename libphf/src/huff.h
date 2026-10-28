@@ -25,10 +25,10 @@ int huff_build_lengths(const uint32_t *freq, int n, int maxlen, uint8_t *len);
 /* Assigns canonical codes from lengths. */
 void huff_build_codes(const uint8_t *len, int n, uint16_t *code);
 
-/* Fast canonical decoder: O(1) 9-bit lookup table for codes <= 9 bits,
- * falling back to 16-bit left-justified limit comparison for lengths 10..15. */
+/* Fast canonical decoder: O(1) 10-bit lookup table for codes <= 10 bits,
+ * falling back to 16-bit left-justified limit comparison for lengths 11..15. */
 typedef struct {
-    uint16_t fast[HUFF_FAST_SIZE];   /* (len << 8) | sym for len <= 9, else 0 */
+    uint16_t fast[HUFF_FAST_SIZE];   /* (len << 8) | sym for len <= 10, else 0 */
     uint32_t limit[HUFF_MAXLEN + 2]; /* exclusive upper bound, left-justified */
     int32_t base[HUFF_MAXLEN + 2];   /* index into sym[] minus first code */
     uint8_t sym[256];

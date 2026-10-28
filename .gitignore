@@ -1,0 +1,12 @@
+# Build output (use CMake or the scripts in libphf/)
+build/
+build-*/
+libphf/*.dll
+libphf/*.lib
+libphf/*.exp
+libphf/*.obj
+libphf/phf.js
+libphf/phf.wasm
+__pycache__/
+*.pyc
+.DS_Store

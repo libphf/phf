@@ -18,27 +18,55 @@ extern "C" {
 
 #define PHF_VERSION 1
 #define PHF_MAGIC 0x31464850 /* "PHF1" little-endian */
+#define PHF_HEADER_SIZE 20
+#define PHF_CRC_SIZE 4
+
+/* Header flag bits (byte 0x06). */
+#define PHF_FLAG_ALPHA  0x01 /* RGBA (channels == 4) */
+#define PHF_FLAG_MED    0x02 /* spatial MED predictor */
+#define PHF_FLAG_DECORR 0x04 /* R-G, G, B-G color decorrelation */
+#define PHF_FLAG_CRC32  0x08 /* CRC-32 of the payload follows it (4 bytes, LE) */
+
+/* Encoder limits (the inner NHF3 stream stores 16-bit dimensions). */
+#define PHF_MAX_DIM    65535u
+#define PHF_MAX_PIXELS (1u << 26)
+
+/* Error codes returned by the int-returning functions. */
+#define PHF_OK             0
+#define PHF_ERR_ARG       -1 /* NULL pointer / invalid argument */
+#define PHF_ERR_MAGIC     -2 /* not a PHF file */
+#define PHF_ERR_VERSION   -3 /* unsupported container version */
+#define PHF_ERR_SIZE      -4 /* width/height do not match the file */
+#define PHF_ERR_TRUNCATED -5 /* buffer shorter than the header says */
+#define PHF_ERR_STRIDE    -6 /* stride < channels */
+#define PHF_ERR_CORRUPT   -7 /* malformed or inconsistent payload */
+#define PHF_ERR_CHECKSUM  -8 /* payload CRC-32 mismatch */
+#define PHF_ERR_MEM       -9 /* allocation failure */
+#define PHF_ERR_IO       -10 /* file open/write failure */
 
 typedef struct {
     uint32_t width;
     uint32_t height;
     uint8_t  channels;  /* 3 = RGB, 4 = RGBA */
-    uint8_t  flags;     /* Bit 0: alpha, Bit 1: MED pred, Bit 2: G-decorr */
+    uint8_t  flags;     /* PHF_FLAG_* */
     size_t   payload_size;
 } phf_info_t;
 
 /**
  * phf_probe_memory:
  *   Reads the 20-byte PHF file header and populates out_info.
- *   Returns 0 on success, or a negative error code.
+ *   Only needs the first 20 bytes; does not validate the payload.
+ *   Returns PHF_OK on success, or a negative PHF_ERR_* code.
  */
 PHF_API int phf_probe_memory(const uint8_t *data, size_t size, phf_info_t *out_info);
 
 /**
  * phf_encode_memory:
  *   Encodes an RGB or RGBA pixel buffer into the full PHF file container (.phf).
- *   The returned pointer includes the 20-byte header + N-Huffman compressed payload.
- *   Must be freed with phf_free().
+ *   The returned pointer includes the 20-byte header, the N-Huffman compressed
+ *   payload and a 4-byte CRC-32 trailer. Must be freed with phf_free().
+ *   Width and height must each be <= PHF_MAX_DIM and width*height <= PHF_MAX_PIXELS;
+ *   returns NULL otherwise or on allocation failure.
  */
 PHF_API uint8_t* phf_encode_memory(
     const uint8_t *pixels,
@@ -55,7 +83,9 @@ PHF_API uint8_t* phf_encode_memory(
  *           Common values: 3 (tightly packed RGB) or 4 (RGBA / Canvas / Direct3D / Vulkan).
  *           If 0 is passed, stride defaults to the PHF file's native channel count.
  *           If stride >= 4 and source is RGB (channels == 3), alpha is set to 255 (opaque).
- *   Returns 0 on success, or a negative error code.
+ *   dst_pixels must hold width * height * stride bytes.
+ *   If the file carries a CRC-32 (PHF_FLAG_CRC32) it is verified before decoding.
+ *   Returns PHF_OK on success, or a negative PHF_ERR_* code.
  */
 PHF_API int phf_decode_memory(
     const uint8_t *phf_data,
@@ -69,7 +99,7 @@ PHF_API int phf_decode_memory(
 /**
  * phf_write_file:
  *   Encodes and writes an RGB/RGBA image directly to a .phf file on disk.
- *   Returns 0 on success, or a negative error code.
+ *   Returns PHF_OK on success, or a negative PHF_ERR_* code.
  */
 PHF_API int phf_write_file(
     const char *filepath,
