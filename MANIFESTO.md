@@ -7,15 +7,18 @@
 ## 1. The Official Name & The Easter Egg
 To the industry, developer community, and specification bodies, **PHF** officially stands for:
 
-### **Pure High-Fidelity**
-It communicates the technical guarantee of the format: zero degradation, mathematically exact photon-level reconstruction ($\text{PSNR} = \infty$), and pure lossless transmission.
+### **Pure High-Fidelity Format**
+It communicates the technical guarantee of the format:
+- **P — Pure:** Zero degradation, mathematically exact photon-level reconstruction ($\text{PSNR} = \infty$), and pure lossless data.
+- **H — High-Fidelity:** Preservation of subtle gradients, color accuracy, and high-frequency textures without compression artifacts.
+- **F — Format:** A modern, standardized image container designed for speed and universal interoperability.
 
 However, embedded directly into the project's history and manifesto is an intentional **Easter Egg** — the authentic tribute from which the codec was born:
 
 ### **Pereira • Huffman • Format**
 - **P — Pereira:** Honoring **Ygor D. L. Pereira**, whose 2008 academic research pioneered the N-Huffman order-1 context state graph.
 - **H — Huffman:** Giving long-overdue credit to **David A. Huffman** (1925–1999), whose foundational algorithm powers the digital world but was never credited in a mainstream file extension.
-- **F — Format (and Fast):** Built in pair-programming partnership with **Antigravity (Google DeepMind)** for extreme real-time throughput.
+- **F — Format:** Crafted in pair-programming partnership with **Antigravity (Google DeepMind)** for extreme real-time throughput.
 
 ---
 

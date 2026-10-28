@@ -1,4 +1,4 @@
-# PHF File Format Specification v1.0
+# PHF (Pure High-Fidelity Format) Specification v1.0
 
 The official file extension is **`.phf`**. The recommended MIME type is **`image/phf`** or **`image/x-phf`**.
 
