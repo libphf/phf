@@ -508,23 +508,6 @@ done:
 /* ------------------------------------------------------------------------- */
 /* Reversible transforms                                                     */
 /* ------------------------------------------------------------------------- */
-static inline uint8_t med(int a, int b, int c) {
-    int mx = a > b ? a : b, mn = a > b ? b : a;
-    if (c >= mx) return (uint8_t)mn;
-    if (c <= mn) return (uint8_t)mx;
-    return (uint8_t)(a + b - c);
-}
-
-/* Neighbours with the border rules documented in the review: a=left (or up at
- * x=0, or 0 at the origin), b=up (or a), c=up-left (or b). */
-static inline uint8_t predict(const uint8_t *p, int x, int y, int w, int mode) {
-    int a = x ? p[-1] : (y ? p[-w] : 0);
-    if (mode == NHF3_PRED_LEFT) return (uint8_t)a;
-    int b = y ? p[-w] : a;
-    int c = (x && y) ? p[-w - 1] : b;
-    return med(a, b, c);
-}
-
 static void spatial_forward(const uint8_t *src, uint8_t *res, int w, int h, int mode) {
     if (mode == NHF3_PRED_LEFT) nhf3_spatial_forward_left(src, res, w, h);
     else if (mode == NHF3_PRED_MED) nhf3_spatial_forward_med(src, res, w, h);
@@ -1187,16 +1170,16 @@ NHF3_API uint8_t *nhf3_encode(const uint8_t *src, int w, int h, int ch, int stri
     }
 
     size_t total = NHF3_HEADER_BASE + 4 * (size_t)ch;
-    int enc_ok = 1;
     int c_omp;
+    /* Each thread writes only its own bufs[c]/lens[c]; failures are checked
+     * after the parallel region so no shared flag is written concurrently. */
 #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic) if(n >= 64000)
 #endif
     for (c_omp = 0; c_omp < ch; c_omp++) {
         bufs[c_omp] = nhf3_plane_encode(planes + (size_t)c_omp * n, n, &lens[c_omp], stats ? &stats[c_omp] : NULL);
-        if (!bufs[c_omp]) enc_ok = 0;
     }
-    if (!enc_ok) goto fail;
+    for (int c = 0; c < ch; c++) if (!bufs[c]) goto fail;
     for (int c = 0; c < ch; c++) total += lens[c];
     result = (uint8_t *)malloc(total);
     if (!result) goto fail;
@@ -1342,16 +1325,17 @@ NHF3_API int nhf3_decode(const uint8_t *in, size_t n, uint8_t *dst, int w, int h
     offs[0] = hdr;
     for (int c = 1; c < ch; c++) offs[c] = offs[c - 1] + lens[c - 1];
 
-    int dec_err = NHF3_OK;
+    int plane_err[4] = { NHF3_OK, NHF3_OK, NHF3_OK, NHF3_OK };
     int c_omp;
 #ifdef _OPENMP
     #pragma omp parallel for schedule(dynamic) if(cnt >= 64000)
 #endif
     for (c_omp = 0; c_omp < ch; c_omp++) {
-        int r_c = nhf3_plane_decode(in + offs[c_omp], lens[c_omp], planes + (size_t)c_omp * cnt, cnt);
-        if (r_c != NHF3_OK) dec_err = r_c;
+        plane_err[c_omp] = nhf3_plane_decode(in + offs[c_omp], lens[c_omp], planes + (size_t)c_omp * cnt, cnt);
     }
-    if (dec_err != NHF3_OK) { free(planes); return dec_err; }
+    for (int c = 0; c < ch; c++) {
+        if (plane_err[c] != NHF3_OK) { free(planes); return plane_err[c]; }
+    }
 
     if (pred != NHF3_PRED_NONE) {
 #ifdef _OPENMP
@@ -1414,70 +1398,106 @@ NHF3_API void *nhf3_malloc(size_t n) { return malloc(n); }
 /* PHF File Container (PHF v1.0) Implementation                              */
 /* ========================================================================= */
 
+/* CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320), slicing-by-4. The table is
+ * built per call (4 KB, negligible next to decoding) so there is no shared
+ * mutable state between threads. */
+static uint32_t phf_crc32(const uint8_t *p, size_t n) {
+    uint32_t t[4][256];
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+        t[0][i] = c;
+    }
+    for (uint32_t i = 0; i < 256; i++) {
+        t[1][i] = (t[0][i] >> 8) ^ t[0][t[0][i] & 0xFF];
+        t[2][i] = (t[1][i] >> 8) ^ t[0][t[1][i] & 0xFF];
+        t[3][i] = (t[2][i] >> 8) ^ t[0][t[2][i] & 0xFF];
+    }
+    uint32_t crc = 0xFFFFFFFFu;
+    while (n >= 4) {
+        crc ^= (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        crc = t[3][crc & 0xFF] ^ t[2][(crc >> 8) & 0xFF] ^ t[1][(crc >> 16) & 0xFF] ^ t[0][crc >> 24];
+        p += 4;
+        n -= 4;
+    }
+    while (n--) crc = (crc >> 8) ^ t[0][(crc ^ *p++) & 0xFF];
+    return crc ^ 0xFFFFFFFFu;
+}
+
+static void put_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static uint32_t get_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static int phf_map_nhf3_error(int rc) {
+    switch (rc) {
+    case NHF3_OK:            return PHF_OK;
+    case NHF3_ERR_ARG:       return PHF_ERR_ARG;
+    case NHF3_ERR_MEM:       return PHF_ERR_MEM;
+    case NHF3_ERR_TRUNCATED: return PHF_ERR_TRUNCATED;
+    case NHF3_ERR_SIZE:      return PHF_ERR_SIZE;
+    default:                 return PHF_ERR_CORRUPT; /* MAGIC/CORRUPT inside the payload */
+    }
+}
+
 PHF_API void phf_free(void *p) {
     if (p) free(p);
 }
 
 PHF_API int phf_probe_memory(const uint8_t *data, size_t size, phf_info_t *out_info) {
-    if (!data || size < 20) return -1;
-    if (memcmp(data, "PHF1", 4) != 0) return -2;
-    if (data[4] != PHF_VERSION) return -3;
-    
+    if (!data) return PHF_ERR_ARG;
+    if (size < PHF_HEADER_SIZE) return PHF_ERR_TRUNCATED;
+    if (memcmp(data, "PHF1", 4) != 0) return PHF_ERR_MAGIC;
+    if (data[4] != PHF_VERSION) return PHF_ERR_VERSION;
+
     if (out_info) {
         out_info->channels = data[5];
         out_info->flags = data[6];
-        out_info->width = (uint32_t)data[8] | ((uint32_t)data[9] << 8) | ((uint32_t)data[10] << 16) | ((uint32_t)data[11] << 24);
-        out_info->height = (uint32_t)data[12] | ((uint32_t)data[13] << 8) | ((uint32_t)data[14] << 16) | ((uint32_t)data[15] << 24);
-        out_info->payload_size = (size_t)((uint32_t)data[16] | ((uint32_t)data[17] << 8) | ((uint32_t)data[18] << 16) | ((uint32_t)data[19] << 24));
+        out_info->width = get_le32(data + 8);
+        out_info->height = get_le32(data + 12);
+        out_info->payload_size = (size_t)get_le32(data + 16);
     }
-    return 0;
+    return PHF_OK;
 }
 
 PHF_API uint8_t* phf_encode_memory(const uint8_t *pixels, uint32_t width, uint32_t height, uint8_t channels, size_t *out_size) {
     if (!pixels || width == 0 || height == 0 || (channels != 3 && channels != 4) || !out_size) {
         return NULL;
     }
-    
+    if (width > PHF_MAX_DIM || height > PHF_MAX_DIM || (uint64_t)width * height > PHF_MAX_PIXELS) {
+        return NULL;
+    }
+
     size_t payload_sz = 0;
-    int decorrelate = (channels >= 3) ? 1 : 0;
+    int decorrelate = 1; /* channels is always 3 or 4 here */
     uint8_t *payload = nhf3_encode(pixels, (int)width, (int)height, (int)channels, (int)channels, NULL, NHF3_PRED_MED, decorrelate, &payload_sz, NULL);
     if (!payload) return NULL;
-    
-    size_t total_sz = 20 + payload_sz;
+    if (payload_sz > 0xFFFFFFFFu) { nhf3_free(payload); return NULL; }
+
+    size_t total_sz = PHF_HEADER_SIZE + payload_sz + PHF_CRC_SIZE;
     uint8_t *phf_buf = (uint8_t*)malloc(total_sz);
     if (!phf_buf) {
         nhf3_free(payload);
         return NULL;
     }
-    
+
     /* Header (20 bytes) */
     memcpy(phf_buf, "PHF1", 4);
     phf_buf[4] = (uint8_t)PHF_VERSION;
     phf_buf[5] = channels;
-    phf_buf[6] = (uint8_t)((channels == 4 ? 1 : 0) | (2 << 1) | (decorrelate << 2));
+    phf_buf[6] = (uint8_t)((channels == 4 ? PHF_FLAG_ALPHA : 0) | PHF_FLAG_MED
+                           | (decorrelate ? PHF_FLAG_DECORR : 0) | PHF_FLAG_CRC32);
     phf_buf[7] = 0; /* reserved */
-    
-    /* Width */
-    phf_buf[8]  = (uint8_t)(width & 0xFF);
-    phf_buf[9]  = (uint8_t)((width >> 8) & 0xFF);
-    phf_buf[10] = (uint8_t)((width >> 16) & 0xFF);
-    phf_buf[11] = (uint8_t)((width >> 24) & 0xFF);
-    
-    /* Height */
-    phf_buf[12] = (uint8_t)(height & 0xFF);
-    phf_buf[13] = (uint8_t)((height >> 8) & 0xFF);
-    phf_buf[14] = (uint8_t)((height >> 16) & 0xFF);
-    phf_buf[15] = (uint8_t)((height >> 24) & 0xFF);
-    
-    /* Payload Size */
-    phf_buf[16] = (uint8_t)(payload_sz & 0xFF);
-    phf_buf[17] = (uint8_t)((payload_sz >> 8) & 0xFF);
-    phf_buf[18] = (uint8_t)((payload_sz >> 16) & 0xFF);
-    phf_buf[19] = (uint8_t)((payload_sz >> 24) & 0xFF);
-    
-    memcpy(phf_buf + 20, payload, payload_sz);
+    put_le32(phf_buf + 8, width);
+    put_le32(phf_buf + 12, height);
+    put_le32(phf_buf + 16, (uint32_t)payload_sz);
+
+    memcpy(phf_buf + PHF_HEADER_SIZE, payload, payload_sz);
+    put_le32(phf_buf + PHF_HEADER_SIZE + payload_sz, phf_crc32(payload, payload_sz));
     nhf3_free(payload);
-    
+
     *out_size = total_sz;
     return phf_buf;
 }
@@ -1485,80 +1505,100 @@ PHF_API uint8_t* phf_encode_memory(const uint8_t *pixels, uint32_t width, uint32
 PHF_API int phf_decode_memory(const uint8_t *phf_data, size_t phf_size, uint8_t *dst_pixels, uint32_t width, uint32_t height, uint8_t stride) {
     phf_info_t info;
     int rc = phf_probe_memory(phf_data, phf_size, &info);
-    if (rc != 0) return rc;
-    
+    if (rc != PHF_OK) return rc;
+    if (!dst_pixels) return PHF_ERR_ARG;
+
     if (info.width != width || info.height != height) {
-        return -4; /* Mismatch dimensions */
+        return PHF_ERR_SIZE;
     }
+    if (info.channels != 3 && info.channels != 4) return PHF_ERR_CORRUPT;
     if (stride == 0) stride = info.channels;
     if (stride < info.channels) {
-        return -6; /* Stride cannot be less than source channels */
+        return PHF_ERR_STRIDE;
     }
-    if (phf_size < 20 + info.payload_size) {
-        return -5; /* Truncated */
+    /* Written as subtractions so a huge payload_size cannot wrap around on
+     * 32-bit targets (WASM) and pass the check. */
+    size_t avail = phf_size - PHF_HEADER_SIZE;
+    int has_crc = (info.flags & PHF_FLAG_CRC32) != 0;
+    if (info.payload_size > avail) return PHF_ERR_TRUNCATED;
+    if (has_crc && avail - info.payload_size < PHF_CRC_SIZE) return PHF_ERR_TRUNCATED;
+
+    const uint8_t *payload = phf_data + PHF_HEADER_SIZE;
+    if (has_crc && phf_crc32(payload, info.payload_size) != get_le32(payload + info.payload_size)) {
+        return PHF_ERR_CHECKSUM;
     }
-    
-    return nhf3_decode(phf_data + 20, info.payload_size, dst_pixels, (int)width, (int)height, (int)stride);
+
+    int nw, nh, nch, npf;
+    rc = nhf3_probe(payload, info.payload_size, &nw, &nh, &nch, &npf);
+    if (rc != NHF3_OK) return phf_map_nhf3_error(rc);
+    if ((uint32_t)nw != width || (uint32_t)nh != height || nch != info.channels || npf) return PHF_ERR_CORRUPT;
+
+    return phf_map_nhf3_error(nhf3_decode(payload, info.payload_size, dst_pixels, (int)width, (int)height, (int)stride));
 }
 
 PHF_API int phf_write_file(const char *filepath, const uint8_t *pixels, uint32_t width, uint32_t height, uint8_t channels) {
-    if (!filepath || !pixels) return -1;
+    if (!filepath || !pixels) return PHF_ERR_ARG;
     size_t out_sz = 0;
     uint8_t *phf_bytes = phf_encode_memory(pixels, width, height, channels, &out_sz);
-    if (!phf_bytes) return -2;
-    
+    if (!phf_bytes) return PHF_ERR_ARG;
+
     FILE *fp = fopen(filepath, "wb");
     if (!fp) {
         phf_free(phf_bytes);
-        return -3;
+        return PHF_ERR_IO;
     }
     size_t written = fwrite(phf_bytes, 1, out_sz, fp);
-    fclose(fp);
+    int close_rc = fclose(fp);
     phf_free(phf_bytes);
-    return (written == out_sz) ? 0 : -4;
+    return (written == out_sz && close_rc == 0) ? PHF_OK : PHF_ERR_IO;
 }
 
 PHF_API uint8_t* phf_read_file(const char *filepath, phf_info_t *out_info) {
     if (!filepath) return NULL;
     FILE *fp = fopen(filepath, "rb");
     if (!fp) return NULL;
-    
-    fseek(fp, 0, SEEK_END);
+
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return NULL; }
     long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (sz < 20) { fclose(fp); return NULL; }
-    
+    if (sz < PHF_HEADER_SIZE || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return NULL; }
+
     uint8_t *file_data = (uint8_t*)malloc((size_t)sz);
     if (!file_data) { fclose(fp); return NULL; }
-    
+
     if (fread(file_data, 1, (size_t)sz, fp) != (size_t)sz) {
         free(file_data);
         fclose(fp);
         return NULL;
     }
     fclose(fp);
-    
+
     phf_info_t info;
-    if (phf_probe_memory(file_data, (size_t)sz, &info) != 0) {
+    if (phf_probe_memory(file_data, (size_t)sz, &info) != PHF_OK) {
         free(file_data);
         return NULL;
     }
-    
+    /* Validate the untrusted header before sizing the allocation from it. */
+    if ((info.channels != 3 && info.channels != 4) || info.width == 0 || info.height == 0
+        || info.width > PHF_MAX_DIM || info.height > PHF_MAX_DIM
+        || (uint64_t)info.width * info.height > PHF_MAX_PIXELS) {
+        free(file_data);
+        return NULL;
+    }
+
     size_t img_bytes = (size_t)info.width * (size_t)info.height * (size_t)info.channels;
     uint8_t *dst_rgb = (uint8_t*)malloc(img_bytes);
     if (!dst_rgb) {
         free(file_data);
         return NULL;
     }
-    
+
     int dec_rc = phf_decode_memory(file_data, (size_t)sz, dst_rgb, info.width, info.height, info.channels);
     free(file_data);
-    if (dec_rc != 0) {
+    if (dec_rc != PHF_OK) {
         free(dst_rgb);
         return NULL;
     }
-    
+
     if (out_info) *out_info = info;
     return dst_rgb;
 }
-
