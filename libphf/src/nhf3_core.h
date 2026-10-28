@@ -5,8 +5,9 @@
  * tree per context, where the context is the previous symbol (order-1 graph).
  *
  * New in NHF3:
- *   - canonical, length-limited (15 bit) codes: tables are sent as lengths only;
- *   - lengths compressed with RLE + a code-length Huffman code;
+ *   - canonical, length-limited (15 bit, JPEG Annex K.3 adjustment) codes:
+ *     tables are sent as lengths only;
+ *   - sparse length tables: Elias-gamma symbol gaps + 4-bit lengths;
  *   - per-context exact cost decision: own table / shared fallback table /
  *     deterministic (0 bits, as in the monograph's "immediate states");
  *   - reversible spatial prediction (MED, JPEG-LS) and channel decorrelation;
@@ -65,21 +66,23 @@ NHF3_API uint8_t *nhf3_encode(const uint8_t *src, int w, int h, int ch, int stri
                               const uint8_t *prev, int pred, int decorrelate,
                               size_t *out_size, NHF3PlaneStats *stats);
 
-/* Like nhf3_encode, with closed-loop near-lossless quantization: max abs error
- * per channel is guaranteed <= delta (0 = lossless, 1..15 = near-lossless).
- * If recon_out != NULL (w*h*stride bytes), receives the reconstructed frame. */
+/* Same as nhf3_encode (always lossless). `delta` is reserved for a future
+ * near-lossless mode and is currently IGNORED. If recon_out != NULL
+ * (w*h*stride bytes), it receives the reconstructed frame (a copy of src). */
 NHF3_API uint8_t *nhf3_encode_near(const uint8_t *src, int w, int h, int ch, int stride,
                                    const uint8_t *prev, int pred, int decorrelate, int delta,
                                    uint8_t *recon_out, size_t *out_size, NHF3PlaneStats *stats);
 
-/* Explicit whole-pixel (palette) N-Huffman encoder (equivalent to pred = NHF3_PRED_PIXEL). */
+/* Explicit whole-pixel (palette) N-Huffman encoder (equivalent to pred = NHF3_PRED_PIXEL).
+ * `delta` is reserved and currently ignored (always lossless). */
 NHF3_API uint8_t *nhf3_encode_pixel(const uint8_t *src, int w, int h, int ch, int stride,
                                     const uint8_t *prev, int delta, uint8_t *recon_out,
                                     size_t *out_size, NHF3PlaneStats *stats);
 
 /* Encodes as I-frame and (if prev != NULL) also as P-frame, returning the
  * smaller packet. Updates recon_out (if non-NULL) with the winning mode's
- * reconstruction so the caller can feed it back as `prev` on the next frame. */
+ * reconstruction so the caller can feed it back as `prev` on the next frame.
+ * `delta` is reserved and currently ignored (always lossless). */
 NHF3_API uint8_t *nhf3_encode_auto(const uint8_t *src, int w, int h, int ch, int stride,
                                    const uint8_t *prev, int pred, int decorrelate, int delta,
                                    uint8_t *recon_out, size_t *out_size, NHF3PlaneStats *stats);
