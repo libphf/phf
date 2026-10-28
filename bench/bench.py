@@ -30,7 +30,7 @@ lib = phf_tool.libphf
 def phf_encode(rgb, ch):
     h, w = rgb.shape[:2]
     out_sz = ctypes.c_size_t(0)
-    ptr = lib.phf_encode_memory(rgb.ctypes.data, w, h, ch, ctypes.byref(out_sz))
+    ptr = lib.phf_encode_memory(rgb.ctypes.data, w, h, ch, None, ctypes.byref(out_sz))
     if not ptr:
         raise RuntimeError("phf_encode_memory failed")
     data = ctypes.string_at(ptr, out_sz.value)

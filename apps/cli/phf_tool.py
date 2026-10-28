@@ -26,6 +26,11 @@ PHF_FLAG_MED = 0x02
 PHF_FLAG_DECORR = 0x04
 PHF_FLAG_CRC32 = 0x08
 
+# phf_mode_t / phf_effort_t
+PHF_MODES = {"auto": 0, "med": 1, "palette": 2}
+PHF_EFFORT_BEST = 0
+PHF_EFFORT_FAST = 1
+
 PHF_ERRORS = {
     -1: "invalid argument",
     -2: "not a PHF file (bad magic)",
@@ -79,7 +84,11 @@ class PHFInfo(ctypes.Structure):
 libphf.phf_probe_memory.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(PHFInfo)]
 libphf.phf_probe_memory.restype = ctypes.c_int
 
-libphf.phf_encode_memory.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint8, ctypes.POINTER(ctypes.c_size_t)]
+class PHFEncodeOptions(ctypes.Structure):
+    _fields_ = [("mode", ctypes.c_int), ("effort", ctypes.c_int)]
+
+libphf.phf_encode_memory.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint8,
+                                     ctypes.POINTER(PHFEncodeOptions), ctypes.POINTER(ctypes.c_size_t)]
 libphf.phf_encode_memory.restype = ctypes.c_void_p
 
 libphf.phf_decode_memory.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint8]
@@ -111,7 +120,7 @@ def load_rgb(input_path):
     return None, f"unsupported channel count {img.shape[2]}"
 
 
-def encode_image(input_path, output_path=None):
+def encode_image(input_path, output_path=None, mode="auto", fast=False):
     if not os.path.exists(input_path):
         print(f"Error: File not found: {input_path}")
         return False
@@ -130,9 +139,10 @@ def encode_image(input_path, output_path=None):
     print(f"Encoding: {input_path}")
     print(f"  Dimensions: {w}x{h} ({channels} channels) | Raw: {raw_bytes / (1024*1024):.2f} MB")
 
+    opts = PHFEncodeOptions(PHF_MODES[mode], PHF_EFFORT_FAST if fast else PHF_EFFORT_BEST)
     out_sz = ctypes.c_size_t(0)
     t0 = time.perf_counter()
-    ptr = libphf.phf_encode_memory(rgb.ctypes.data, w, h, channels, ctypes.byref(out_sz))
+    ptr = libphf.phf_encode_memory(rgb.ctypes.data, w, h, channels, ctypes.byref(opts), ctypes.byref(out_sz))
     enc_time = time.perf_counter() - t0
 
     if not ptr:
@@ -150,10 +160,17 @@ def encode_image(input_path, output_path=None):
     savings = (1.0 - comp_bytes / raw_bytes) * 100.0
     throughput = (raw_bytes / (1024*1024)) / enc_time
 
-    print(f"  -> Saved: {output_path}")
+    print(f"  -> Saved: {output_path} ({coding_mode(phf_bytes)} mode)")
     print(f"  -> Size: {comp_bytes / (1024*1024):.2f} MB (Ratio: {ratio:.2f}x, Space Savings: {savings:.1f}%)")
     print(f"  -> Speed: {enc_time*1000:.1f} ms ({throughput:.1f} MB/s)")
     return True
+
+
+def coding_mode(phf_bytes):
+    """Name of the NHF3 predictor stored in the payload header (byte 5 of the payload)."""
+    if len(phf_bytes) < 26:
+        return "unknown"
+    return {0: "none", 1: "left", 2: "MED", 3: "palette"}[(phf_bytes[25] >> 1) & 3]
 
 
 def probe(phf_bytes):
@@ -254,6 +271,7 @@ def info_image(input_path):
     print(f"Resolution:      {info.width} x {info.height} pixels")
     print(f"Channels:        {info.channels} ({'RGBA' if info.channels == 4 else 'RGB'})")
     print(f"Flags:           0x{info.flags:02x} ({', '.join(flag_names) or 'none'})")
+    print(f"Coding mode:     {coding_mode(phf_bytes)}")
     print(f"Raw Size:        {raw_sz / (1024*1024):.2f} MB ({raw_sz} bytes)")
     print(f"PHF Size:        {len(phf_bytes) / (1024*1024):.2f} MB ({len(phf_bytes)} bytes)")
     print(f"Compression:     {ratio:.2f}x ({savings:.1f}% space savings)")
@@ -263,22 +281,37 @@ def info_image(input_path):
 
 
 def main():
-    if len(sys.argv) < 3:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    mode, fast = "auto", False
+    for f in flags:
+        if f.startswith("--mode=") and f[7:] in PHF_MODES:
+            mode = f[7:]
+        elif f == "--fast":
+            fast = True
+        else:
+            print(f"Unknown option: {f}")
+            return 2
+
+    if len(args) < 2:
         print("PHF Utility v1.0 — Pereira-Huffman Format")
         print("Usage:")
-        print("  python phf_tool.py encode <input.jpg|png> [output.phf]")
+        print("  python phf_tool.py encode <input.jpg|png> [output.phf] [--mode=auto|med|palette] [--fast]")
         print("  python phf_tool.py decode <input.phf> [output.png]")
         print("  python phf_tool.py info   <input.phf>")
+        print("Modes: med = photos, camera, video; palette = graphics, screenshots, few colours;")
+        print("       auto (default) tries both when the image has at most 4096 colours.")
+        print("--fast: encode once without trials (what streaming uses); default is best size.")
         return 2
 
-    cmd = sys.argv[1].lower()
-    out = sys.argv[3] if len(sys.argv) >= 4 else None
+    cmd = args[0].lower()
+    out = args[2] if len(args) >= 3 else None
     if cmd == "encode":
-        ok = encode_image(sys.argv[2], out)
+        ok = encode_image(args[1], out, mode, fast)
     elif cmd == "decode":
-        ok = decode_image(sys.argv[2], out)
+        ok = decode_image(args[1], out)
     elif cmd == "info":
-        ok = info_image(sys.argv[2])
+        ok = info_image(args[1])
     else:
         print(f"Unknown command: {cmd}")
         return 2

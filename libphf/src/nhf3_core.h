@@ -34,6 +34,11 @@
 
 enum { NHF3_PRED_NONE = 0, NHF3_PRED_LEFT = 1, NHF3_PRED_MED = 2, NHF3_PRED_PIXEL = 3 };
 
+/* Encoder effort. FAST commits to one plane variant (plain or run-length) from the
+ * share of repeated symbols and encodes once: for streaming. BEST encodes both
+ * variants whenever runs are plausible and keeps the smaller: for files. */
+enum { NHF3_EFFORT_FAST = 0, NHF3_EFFORT_BEST = 1 };
+
 enum {
     NHF3_OK = 0,
     NHF3_ERR_ARG = -1,
@@ -51,8 +56,8 @@ typedef struct {
 } NHF3PlaneStats;
 
 /* ---- Plane level (one stream of bytes, order-1 context) ----------------- */
-/* Encodes n symbols. Returns a malloc'd buffer (free with nhf3_free). */
-NHF3_API uint8_t *nhf3_plane_encode(const uint8_t *sym, uint32_t n, size_t *out_size, NHF3PlaneStats *stats);
+/* Encodes n symbols with NHF3_EFFORT_*. Returns a malloc'd buffer (free with nhf3_free). */
+NHF3_API uint8_t *nhf3_plane_encode(const uint8_t *sym, uint32_t n, int effort, size_t *out_size, NHF3PlaneStats *stats);
 /* Decodes exactly n symbols. Returns NHF3_OK or a negative error. */
 NHF3_API int nhf3_plane_decode(const uint8_t *in, size_t in_size, uint8_t *out, uint32_t n);
 
@@ -61,9 +66,10 @@ NHF3_API int nhf3_plane_decode(const uint8_t *in, size_t in_size, uint8_t *out, 
  * prev: previous reconstructed frame (same layout) for a P-frame, or NULL.
  * pred: NHF3_PRED_NONE, NHF3_PRED_LEFT, NHF3_PRED_MED, or NHF3_PRED_PIXEL
  *       (whole-pixel palette N-Huffman mode, activated by --pixelmode).
+ * effort: NHF3_EFFORT_FAST or NHF3_EFFORT_BEST.
  * Returns a malloc'd NHF3 packet. stats (optional) receives one entry per channel. */
 NHF3_API uint8_t *nhf3_encode(const uint8_t *src, int w, int h, int ch, int stride,
-                              const uint8_t *prev, int pred, int decorrelate,
+                              const uint8_t *prev, int pred, int decorrelate, int effort,
                               size_t *out_size, NHF3PlaneStats *stats);
 
 /* Same as nhf3_encode (always lossless). `delta` is reserved for a future

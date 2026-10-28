@@ -176,6 +176,41 @@ static inline void nhf3_spatial_inverse_med(uint8_t *buf, int w, int h) {
     }
 }
 
+/* Three planes in one pass: their serial dependency chains are independent, so an
+ * out-of-order core overlaps them (about 2x faster than three separate passes on
+ * Apple M3; little gain on in-order cores). Same output as nhf3_spatial_inverse_med. */
+#define NHF3_MED_STEP(row, prow, a, x)                                          \
+    do {                                                                        \
+        int b_ = (prow)[x], c_ = (prow)[(x) - 1];                               \
+        int mn_ = (a) < b_ ? (a) : b_;                                          \
+        int mx_ = (a) ^ b_ ^ mn_;                                               \
+        int g_ = (a) + b_ - c_;                                                 \
+        g_ = g_ < mn_ ? mn_ : g_;                                               \
+        g_ = g_ > mx_ ? mx_ : g_;                                               \
+        (a) = (uint8_t)((row)[x] + g_);                                         \
+        (row)[x] = (uint8_t)(a);                                                \
+    } while (0)
+
+static inline void nhf3_spatial_inverse_med3(uint8_t *p0, uint8_t *p1, uint8_t *p2, int w, int h) {
+    if (w <= 0 || h <= 0) return;
+    for (int x = 1; x < w; x++) {
+        p0[x] = (uint8_t)(p0[x] + p0[x - 1]);
+        p1[x] = (uint8_t)(p1[x] + p1[x - 1]);
+        p2[x] = (uint8_t)(p2[x] + p2[x - 1]);
+    }
+    for (int y = 1; y < h; y++) {
+        uint8_t *r0 = p0 + (size_t)y * w, *r1 = p1 + (size_t)y * w, *r2 = p2 + (size_t)y * w;
+        const uint8_t *q0 = r0 - w, *q1 = r1 - w, *q2 = r2 - w;
+        int a0 = (uint8_t)(r0[0] + q0[0]), a1 = (uint8_t)(r1[0] + q1[0]), a2 = (uint8_t)(r2[0] + q2[0]);
+        r0[0] = (uint8_t)a0; r1[0] = (uint8_t)a1; r2[0] = (uint8_t)a2;
+        for (int x = 1; x < w; x++) {
+            NHF3_MED_STEP(r0, q0, a0, x);
+            NHF3_MED_STEP(r1, q1, a1, x);
+            NHF3_MED_STEP(r2, q2, a2, x);
+        }
+    }
+}
+
 static inline void nhf3_spatial_inverse_left(uint8_t *buf, int w, int h) {
     if (w <= 0 || h <= 0) return;
     for (int x = 1; x < w; x++) buf[x] = (uint8_t)(buf[x] + buf[x - 1]);

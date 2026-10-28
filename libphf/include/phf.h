@@ -44,6 +44,31 @@ extern "C" {
 #define PHF_ERR_MEM       -9 /* allocation failure */
 #define PHF_ERR_IO       -10 /* file open/write failure */
 
+/* Coding mode. MED predicts each colour plane from its neighbours: best for photos,
+ * camera and video. PALETTE codes whole pixels as indices into the image's colours:
+ * best (and faster) for graphics, screenshots and UI with few colours. AUTO picks
+ * per image; see phf_effort_t. */
+typedef enum {
+    PHF_MODE_AUTO = 0,
+    PHF_MODE_MED = 1,
+    PHF_MODE_PALETTE = 2
+} phf_mode_t;
+
+/* Encoder effort. BEST is for files: AUTO encodes both modes when the image has at
+ * most 4096 colours and keeps the smaller one, and each plane tries both of its
+ * variants. FAST is for streaming: one encode, no trials; AUTO uses PALETTE only
+ * for images with at most 256 colours. Decoding speed does not depend on it. */
+typedef enum {
+    PHF_EFFORT_BEST = 0,
+    PHF_EFFORT_FAST = 1
+} phf_effort_t;
+
+/* A zero-initialised struct (or a NULL pointer) means { AUTO, BEST }. */
+typedef struct {
+    phf_mode_t mode;
+    phf_effort_t effort;
+} phf_encode_options_t;
+
 typedef struct {
     uint32_t width;
     uint32_t height;
@@ -65,14 +90,17 @@ PHF_API int phf_probe_memory(const uint8_t *data, size_t size, phf_info_t *out_i
  *   Encodes an RGB or RGBA pixel buffer into the full PHF file container (.phf).
  *   The returned pointer includes the 20-byte header, the N-Huffman compressed
  *   payload and a 4-byte CRC-32 trailer. Must be freed with phf_free().
+ *   options may be NULL for { PHF_MODE_AUTO, PHF_EFFORT_BEST }; streaming callers
+ *   usually want a fixed mode with PHF_EFFORT_FAST.
  *   Width and height must each be <= PHF_MAX_DIM and width*height <= PHF_MAX_PIXELS;
- *   returns NULL otherwise or on allocation failure.
+ *   returns NULL otherwise, on an invalid option, or on allocation failure.
  */
 PHF_API uint8_t* phf_encode_memory(
     const uint8_t *pixels,
     uint32_t width,
     uint32_t height,
     uint8_t channels,
+    const phf_encode_options_t *options,
     size_t *out_size
 );
 
@@ -99,6 +127,7 @@ PHF_API int phf_decode_memory(
 /**
  * phf_write_file:
  *   Encodes and writes an RGB/RGBA image directly to a .phf file on disk.
+ *   options as in phf_encode_memory (NULL = AUTO, BEST).
  *   Returns PHF_OK on success, or a negative PHF_ERR_* code.
  */
 PHF_API int phf_write_file(
@@ -106,7 +135,8 @@ PHF_API int phf_write_file(
     const uint8_t *pixels,
     uint32_t width,
     uint32_t height,
-    uint8_t channels
+    uint8_t channels,
+    const phf_encode_options_t *options
 );
 
 /**
