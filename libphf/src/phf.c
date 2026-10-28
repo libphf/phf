@@ -284,21 +284,28 @@ static uint8_t *encode_stream(const uint8_t *v, uint32_t m, const uint32_t *runs
     return w.buf;
 }
 
-NHF3_API uint8_t *nhf3_plane_encode(const uint8_t *sym, uint32_t n, size_t *out_size, NHF3PlaneStats *st) {
+/* Which variants of a stream to encode, given how many symbols repeat the previous
+ * one. FAST encodes once: on photos, camera and video frames the run-length variant
+ * only won from about 60% repeats up. BEST encodes both whenever runs are plausible
+ * and the caller keeps the smaller. */
+static void rle_plan(uint32_t reps, uint32_t n, int effort, int *try_raw, int *try_rle) {
+    if (effort == NHF3_EFFORT_FAST) {
+        *try_rle = (uint64_t)reps * 100 >= (uint64_t)n * 60;
+        *try_raw = !*try_rle;
+    } else {
+        *try_raw = 1;
+        *try_rle = (uint64_t)reps * 20 >= n;
+    }
+}
+
+NHF3_API uint8_t *nhf3_plane_encode(const uint8_t *sym, uint32_t n, int effort, size_t *out_size, NHF3PlaneStats *st) {
     if (!sym || !n || !out_size) return NULL;
 
     uint32_t reps = 0;
     for (uint32_t i = 1; i < n; i++) reps += (sym[i] == sym[i - 1]);
 
-    /* For large video planes (n >= 64000), avoid encoding both non-RLE and RLE
-     * when one regime clearly dominates:
-     * - If reps >= 45% of n (typical P-frame or flat anime region), RLE always wins.
-     * - If reps < 18% of n (noisy texture), non-RLE always wins because RLE pays >= 1 bit/run. */
-    int try_raw = 1, try_rle = ((uint64_t)reps * 20 >= n);
-    if (n >= 64000) {
-        if ((uint64_t)reps * 100 >= (uint64_t)n * 45) try_raw = 0;
-        else if ((uint64_t)reps * 100 < (uint64_t)n * 30) try_rle = 0;
-    }
+    int try_raw, try_rle;
+    rle_plan(reps, n, effort, &try_raw, &try_rle);
 
     size_t sa = 0;
     NHF3PlaneStats sta;
@@ -345,15 +352,33 @@ static int read_run_table(BitReader *r, int *single, int *cls, HuffDec *d) {
     return huff_build_decoder(len, RUN_CLASSES, d);
 }
 
+/* Appends one decoder to a growable pool and returns its index, or -1 when out of
+ * memory. Indices stay valid across reallocations; pointers do not. */
+static int dec_pool_add(HuffDec **pool, int *count, int *cap) {
+    if (*count == *cap) {
+        int ncap = *cap ? *cap * 2 : 16;
+        HuffDec *np = (HuffDec *)realloc(*pool, (size_t)ncap * sizeof(HuffDec));
+        if (!np) return -1;
+        *pool = np;
+        *cap = ncap;
+    }
+    return (*count)++;
+}
+
 NHF3_API int nhf3_plane_decode(const uint8_t *in, size_t in_size, uint8_t *out, uint32_t n) {
     if (!in || !out || !n) return NHF3_ERR_ARG;
     if (in_size < 1) return NHF3_ERR_TRUNCATED;
 
-    HuffDec *dec = (HuffDec *)malloc(259 * sizeof(HuffDec)); /* 0..255 ctx, 256 fallback, 257/258 runs */
-    if (!dec) return NHF3_ERR_MEM;
+    /* Decoders (~2.4 KB each) exist only for the tables the stream carries:
+     * typically 10-60 per plane rather than one per possible context. */
+    HuffDec *dec = NULL;
+    int dec_count = 0, dec_cap = 0;
+    int16_t ctx_idx[256];
+    int run_idx[2] = { -1, -1 }, fb_idx = -1;
     uint8_t kind[256], ssym[256], len[256];
     memset(kind, 0, sizeof(kind));
     memset(ssym, 0, sizeof(ssym));
+    for (int c = 0; c < 256; c++) ctx_idx[c] = -1;
     int rc = NHF3_OK;
     int rsingle[2] = { 1, 1 }, rcls[2] = { 0, 0 };
 
@@ -362,30 +387,43 @@ NHF3_API int nhf3_plane_decode(const uint8_t *in, size_t in_size, uint8_t *out, 
     uint8_t first = (uint8_t)br_get(&r, 8);
     int rle = (int)br_get(&r, 1);
     if (rle) {
-        for (int t = 0; t < 2; t++)
-            if (!read_run_table(&r, &rsingle[t], &rcls[t], &dec[257 + t])) { rc = NHF3_ERR_CORRUPT; goto done; }
+        for (int t = 0; t < 2; t++) {
+            int idx = dec_pool_add(&dec, &dec_count, &dec_cap);
+            if (idx < 0) { rc = NHF3_ERR_MEM; goto done; }
+            if (!read_run_table(&r, &rsingle[t], &rcls[t], &dec[idx])) { rc = NHF3_ERR_CORRUPT; goto done; }
+            if (rsingle[t]) dec_count--; /* fixed class: no table */
+            else run_idx[t] = idx;
+        }
     }
     int have_fb = (int)br_get(&r, 1);
     if (have_fb) {
-        if (!get_table(&r, len) || !huff_build_decoder(len, 256, &dec[256])) { rc = NHF3_ERR_CORRUPT; goto done; }
+        fb_idx = dec_pool_add(&dec, &dec_count, &dec_cap);
+        if (fb_idx < 0) { rc = NHF3_ERR_MEM; goto done; }
+        if (!get_table(&r, len) || !huff_build_decoder(len, 256, &dec[fb_idx])) { rc = NHF3_ERR_CORRUPT; goto done; }
     }
-    HuffDec *ctx_dec[256];
-    memset(ctx_dec, 0, sizeof(ctx_dec));
     for (int c = 0; c < 256; c++) {
         if (!br_get(&r, 1)) continue;
         uint32_t k = br_get(&r, 2);
         if (k == 0) { kind[c] = K_SINGLE; ssym[c] = (uint8_t)br_get(&r, 8); }
         else if (k == 1) {
-            if (!get_table(&r, len) || !huff_build_decoder(len, 256, &dec[c])) { rc = NHF3_ERR_CORRUPT; goto done; }
+            int idx = dec_pool_add(&dec, &dec_count, &dec_cap);
+            if (idx < 0) { rc = NHF3_ERR_MEM; goto done; }
+            if (!get_table(&r, len) || !huff_build_decoder(len, 256, &dec[idx])) { rc = NHF3_ERR_CORRUPT; goto done; }
             kind[c] = K_OWN;
-            ctx_dec[c] = &dec[c];
+            ctx_idx[c] = (int16_t)idx;
         } else if (k == 2) {
             if (!have_fb) { rc = NHF3_ERR_CORRUPT; goto done; }
             kind[c] = K_FALLBACK;
-            ctx_dec[c] = &dec[256];
+            ctx_idx[c] = (int16_t)fb_idx;
         } else { rc = NHF3_ERR_CORRUPT; goto done; }
     }
     if (br_overrun(&r)) { rc = NHF3_ERR_TRUNCATED; goto done; }
+
+    /* The pool no longer grows: resolve indices to pointers. */
+    const HuffDec *ctx_dec[256];
+    for (int c = 0; c < 256; c++) ctx_dec[c] = ctx_idx[c] >= 0 ? &dec[ctx_idx[c]] : NULL;
+    const HuffDec *run_dec[2] = { run_idx[0] >= 0 ? &dec[run_idx[0]] : NULL,
+                                  run_idx[1] >= 0 ? &dec[run_idx[1]] : NULL };
 
     {
         uint8_t prev = first;
@@ -446,7 +484,7 @@ NHF3_API int nhf3_plane_decode(const uint8_t *in, size_t in_size, uint8_t *out, 
         int t_ = ((sym_) != 0);                                                 \
         int k_;                                                                 \
         if (rsingle[t_]) k_ = rcls[t_];                                         \
-        else LOCAL_DECODE(&dec[257 + t_], k_);                                  \
+        else LOCAL_DECODE(run_dec[t_], k_);                                     \
         if (k_ < 0 || k_ >= RUN_CLASSES) { rc = NHF3_ERR_CORRUPT; goto done; }  \
         uint32_t ex_ = 0;                                                       \
         if (k_) {                                                               \
@@ -778,7 +816,7 @@ fail:
 }
 
 static uint8_t *pixel_plane_encode(const uint8_t *pal, uint32_t P, int ch,
-                                   const uint32_t *sym, uint32_t n,
+                                   const uint32_t *sym, uint32_t n, int effort,
                                    size_t *out_size, NHF3PlaneStats *st) {
     size_t pal_hdr = 3 + (size_t)P * (size_t)ch;
     if (P == 1) {
@@ -793,11 +831,8 @@ static uint8_t *pixel_plane_encode(const uint8_t *pal, uint32_t P, int ch,
 
     uint32_t reps = 0;
     for (uint32_t i = 1; i < n; i++) reps += (sym[i] == sym[i - 1]);
-    int try_raw = 1, try_rle = ((uint64_t)reps * 20 >= n);
-    if (n >= 64000) {
-        if ((uint64_t)reps * 100 >= (uint64_t)n * 45) try_raw = 0;
-        else if ((uint64_t)reps * 100 < (uint64_t)n * 30) try_rle = 0;
-    }
+    int try_raw, try_rle;
+    rle_plan(reps, n, effort, &try_raw, &try_rle);
 
     size_t sa = 0;
     NHF3PlaneStats sta;
@@ -855,12 +890,15 @@ static int pixel_plane_decode(const uint8_t *in, size_t in_size, uint8_t *dst,
     const uint8_t *pal = in + 3;
     size_t rem = in_size - 3 - pal_bytes;
 
+    /* RGB decoded into a 4-byte stride gets an opaque alpha, as in the plane path. */
+    int fill_alpha = (ch == 3 && stride >= 4);
     if (P == 1) {
         if (rem != 0) return NHF3_ERR_CORRUPT;
         for (uint32_t i = 0; i < n; i++) {
             uint8_t *d = dst + (size_t)i * stride;
             if (pf) for (int c = 0; c < ch; c++) d[c] = (uint8_t)(d[c] + pal[c]);
             else    for (int c = 0; c < ch; c++) d[c] = pal[c];
+            if (fill_alpha) d[3] = 255;
         }
         return NHF3_OK;
     }
@@ -959,11 +997,13 @@ static int pixel_plane_decode(const uint8_t *in, size_t in_size, uint8_t *dst,
             for (; pos < end_; pos++) {                                         \
                 uint8_t *d_ = dst + (size_t)pos * stride;                       \
                 for (int c_ = 0; c_ < ch; c_++) d_[c_] = (uint8_t)(d_[c_] + sc_[c_]); \
+                if (fill_alpha) d_[3] = 255;                                    \
             }                                                                   \
         } else {                                                                \
             for (; pos < end_; pos++) {                                         \
                 uint8_t *d_ = dst + (size_t)pos * stride;                       \
                 for (int c_ = 0; c_ < ch; c_++) d_[c_] = sc_[c_];               \
+                if (fill_alpha) d_[3] = 255;                                    \
             }                                                                   \
         }                                                                       \
     } while (0)
@@ -1030,7 +1070,7 @@ static uint32_t get_u16(const uint8_t *p) { return ((uint32_t)p[0] << 8) | p[1];
 static uint32_t get_u32(const uint8_t *p) { return (get_u16(p) << 16) | get_u16(p + 2); }
 
 static uint8_t *encode_pixel_frame(const uint8_t *src, int w, int h, int ch, int stride,
-                                   const uint8_t *prev, uint8_t *recon_out,
+                                   const uint8_t *prev, int effort, uint8_t *recon_out,
                                    size_t *out_size, NHF3PlaneStats *stats) {
     uint32_t n = (uint32_t)w * (uint32_t)h;
     int pframe = prev != NULL;
@@ -1068,7 +1108,7 @@ static uint8_t *encode_pixel_frame(const uint8_t *src, int w, int h, int ch, int
 
     if (stats) memset(stats, 0, (size_t)ch * sizeof(NHF3PlaneStats));
     size_t plen = 0;
-    pbuf = pixel_plane_encode(pal, P, ch, pix, n, &plen, stats ? &stats[0] : NULL);
+    pbuf = pixel_plane_encode(pal, P, ch, pix, n, effort, &plen, stats ? &stats[0] : NULL);
     if (!pbuf) goto fail;
 
     size_t total = NHF3_HEADER_BASE + 4 * (size_t)ch + plen;
@@ -1093,13 +1133,13 @@ fail:
 }
 
 NHF3_API uint8_t *nhf3_encode(const uint8_t *src, int w, int h, int ch, int stride,
-                              const uint8_t *prev, int pred, int decorrelate,
+                              const uint8_t *prev, int pred, int decorrelate, int effort,
                               size_t *out_size, NHF3PlaneStats *stats) {
     if (!src || !out_size || w <= 0 || h <= 0 || w > 65535 || h > 65535) return NULL;
     if (ch < 1 || ch > 4 || stride < ch || pred < 0 || pred > 3) return NULL;
     if ((uint64_t)w * (uint64_t)h > MAX_PIXELS) return NULL;
     if (pred == NHF3_PRED_PIXEL) {
-        return encode_pixel_frame(src, w, h, ch, stride, prev, NULL, out_size, stats);
+        return encode_pixel_frame(src, w, h, ch, stride, prev, effort, NULL, out_size, stats);
     }
     uint32_t n = (uint32_t)w * (uint32_t)h;
     int pframe = prev != NULL;
@@ -1177,7 +1217,7 @@ NHF3_API uint8_t *nhf3_encode(const uint8_t *src, int w, int h, int ch, int stri
     #pragma omp parallel for schedule(dynamic) if(n >= 64000)
 #endif
     for (c_omp = 0; c_omp < ch; c_omp++) {
-        bufs[c_omp] = nhf3_plane_encode(planes + (size_t)c_omp * n, n, &lens[c_omp], stats ? &stats[c_omp] : NULL);
+        bufs[c_omp] = nhf3_plane_encode(planes + (size_t)c_omp * n, n, effort, &lens[c_omp], stats ? &stats[c_omp] : NULL);
     }
     for (int c = 0; c < ch; c++) if (!bufs[c]) goto fail;
     for (int c = 0; c < ch; c++) total += lens[c];
@@ -1206,14 +1246,14 @@ NHF3_API uint8_t *nhf3_encode_near(const uint8_t *src, int w, int h, int ch, int
                                    uint8_t *recon_out, size_t *out_size, NHF3PlaneStats *stats) {
     (void)delta;
     if (recon_out && recon_out != src) memcpy(recon_out, src, (size_t)w * h * stride);
-    return nhf3_encode(src, w, h, ch, stride, prev, pred, decorrelate, out_size, stats);
+    return nhf3_encode(src, w, h, ch, stride, prev, pred, decorrelate, NHF3_EFFORT_BEST, out_size, stats);
 }
 
 NHF3_API uint8_t *nhf3_encode_pixel(const uint8_t *src, int w, int h, int ch, int stride,
                                     const uint8_t *prev, int delta, uint8_t *recon_out,
                                     size_t *out_size, NHF3PlaneStats *stats) {
     (void)delta;
-    return encode_pixel_frame(src, w, h, ch, stride, prev, recon_out, out_size, stats);
+    return encode_pixel_frame(src, w, h, ch, stride, prev, NHF3_EFFORT_BEST, recon_out, out_size, stats);
 }
 
 NHF3_API uint8_t *nhf3_encode_auto(const uint8_t *src, int w, int h, int ch, int stride,
@@ -1222,7 +1262,7 @@ NHF3_API uint8_t *nhf3_encode_auto(const uint8_t *src, int w, int h, int ch, int
     (void)delta;
     if (!src || w <= 0 || h <= 0 || ch < 1 || ch > 4 || stride < ch || !out_size) return NULL;
     if (recon_out && recon_out != src) memcpy(recon_out, src, (size_t)w * h * stride);
-    if (!prev) return nhf3_encode(src, w, h, ch, stride, NULL, pred, decorrelate, out_size, stats);
+    if (!prev) return nhf3_encode(src, w, h, ch, stride, NULL, pred, decorrelate, NHF3_EFFORT_BEST, out_size, stats);
 
     int p_pred = (pred == NHF3_PRED_PIXEL) ? NHF3_PRED_PIXEL : NHF3_PRED_NONE;
 
@@ -1254,15 +1294,15 @@ NHF3_API uint8_t *nhf3_encode_auto(const uint8_t *src, int w, int h, int ch, int
             }
         }
         if (static_p * 4 < samples && sad_p > sad_i * 2) {
-            return nhf3_encode(src, w, h, ch, stride, NULL, pred, decorrelate, out_size, stats);
+            return nhf3_encode(src, w, h, ch, stride, NULL, pred, decorrelate, NHF3_EFFORT_BEST, out_size, stats);
         }
-        return nhf3_encode(src, w, h, ch, stride, prev, p_pred, decorrelate, out_size, stats);
+        return nhf3_encode(src, w, h, ch, stride, prev, p_pred, decorrelate, NHF3_EFFORT_BEST, out_size, stats);
     }
 
     size_t sz_i = 0, sz_p = 0;
     NHF3PlaneStats st_i[4], st_p[4];
-    uint8_t *pk_i = nhf3_encode(src, w, h, ch, stride, NULL, pred, decorrelate, &sz_i, st_i);
-    uint8_t *pk_p = nhf3_encode(src, w, h, ch, stride, prev, p_pred, decorrelate, &sz_p, st_p);
+    uint8_t *pk_i = nhf3_encode(src, w, h, ch, stride, NULL, pred, decorrelate, NHF3_EFFORT_BEST, &sz_i, st_i);
+    uint8_t *pk_p = nhf3_encode(src, w, h, ch, stride, prev, p_pred, decorrelate, NHF3_EFFORT_BEST, &sz_p, st_p);
 
     if (pk_p && (!pk_i || sz_p < sz_i)) {
         free(pk_i);
@@ -1337,7 +1377,16 @@ NHF3_API int nhf3_decode(const uint8_t *in, size_t n, uint8_t *dst, int w, int h
         if (plane_err[c] != NHF3_OK) { free(planes); return plane_err[c]; }
     }
 
-    if (pred != NHF3_PRED_NONE) {
+    /* With OpenMP, large frames run one thread per plane; otherwise the three
+     * colour planes share one interleaved pass. */
+    int med3 = pred == NHF3_PRED_MED && ch >= 3;
+#ifdef _OPENMP
+    if (cnt >= 64000) med3 = 0;
+#endif
+    if (med3) {
+        nhf3_spatial_inverse_med3(planes, planes + cnt, planes + 2 * (size_t)cnt, pw, ph);
+        if (ch == 4) spatial_inverse(planes + 3 * (size_t)cnt, pw, ph, pred);
+    } else if (pred != NHF3_PRED_NONE) {
 #ifdef _OPENMP
         #pragma omp parallel for if(cnt >= 64000)
 #endif
@@ -1462,17 +1511,79 @@ PHF_API int phf_probe_memory(const uint8_t *data, size_t size, phf_info_t *out_i
     return PHF_OK;
 }
 
-PHF_API uint8_t* phf_encode_memory(const uint8_t *pixels, uint32_t width, uint32_t height, uint8_t channels, size_t *out_size) {
+/* AUTO with BEST also encodes the palette mode up to this many colours; AUTO with
+ * FAST uses it, without trying MED, up to the smaller limit. On the test images the
+ * palette mode was never smaller beyond a few thousand colours and got much slower. */
+#define PHF_AUTO_PALETTE_TRY  4096u
+#define PHF_AUTO_PALETTE_FAST 256u
+
+/* Number of distinct colours, or limit + 1 as soon as there are more. */
+static uint32_t count_colors_upto(const uint8_t *px, uint32_t n, int ch, uint32_t limit) {
+    uint32_t cap = 16;
+    while (cap < 2 * (limit + 1)) cap <<= 1;
+    uint32_t *keys = (uint32_t *)malloc((size_t)cap * sizeof(uint32_t));
+    uint8_t *used = (uint8_t *)calloc(cap, 1);
+    if (!keys || !used) { free(keys); free(used); return limit + 1; }
+    uint32_t count = 0, prev_key = 0;
+    for (uint32_t i = 0; i < n && count <= limit; i++) {
+        const uint8_t *p = px + (size_t)i * ch;
+        uint32_t key = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16)
+                     | (ch == 4 ? (uint32_t)p[3] << 24 : 0);
+        if (i && key == prev_key) continue; /* runs are common in graphics */
+        prev_key = key;
+        uint32_t h = (key * 2654435761u) & (cap - 1);
+        while (used[h] && keys[h] != key) h = (h + 1) & (cap - 1);
+        if (!used[h]) { used[h] = 1; keys[h] = key; count++; }
+    }
+    free(keys);
+    free(used);
+    return count;
+}
+
+/* Encodes the NHF3 payload in the requested mode; *palette tells which mode won. */
+static uint8_t *encode_payload(const uint8_t *pixels, uint32_t w, uint32_t h, int ch,
+                               phf_mode_t mode, int effort, size_t *out_size, int *palette) {
+    int try_med = mode != PHF_MODE_PALETTE, try_pal = mode != PHF_MODE_MED;
+    if (mode == PHF_MODE_AUTO) {
+        uint32_t limit = effort == NHF3_EFFORT_FAST ? PHF_AUTO_PALETTE_FAST : PHF_AUTO_PALETTE_TRY;
+        try_pal = count_colors_upto(pixels, w * h, ch, limit) <= limit;
+        if (try_pal && effort == NHF3_EFFORT_FAST) try_med = 0;
+    }
+    size_t sm = 0, sp = 0;
+    uint8_t *med = try_med ? nhf3_encode(pixels, (int)w, (int)h, ch, ch, NULL, NHF3_PRED_MED, 1, effort, &sm, NULL) : NULL;
+    uint8_t *pal = try_pal ? nhf3_encode(pixels, (int)w, (int)h, ch, ch, NULL, NHF3_PRED_PIXEL, 0, effort, &sp, NULL) : NULL;
+    if (pal && (!med || sp < sm)) {
+        nhf3_free(med);
+        *palette = 1;
+        *out_size = sp;
+        return pal;
+    }
+    nhf3_free(pal);
+    *palette = 0;
+    *out_size = sm;
+    return med;
+}
+
+PHF_API uint8_t* phf_encode_memory(const uint8_t *pixels, uint32_t width, uint32_t height, uint8_t channels,
+                                   const phf_encode_options_t *options, size_t *out_size) {
     if (!pixels || width == 0 || height == 0 || (channels != 3 && channels != 4) || !out_size) {
         return NULL;
     }
     if (width > PHF_MAX_DIM || height > PHF_MAX_DIM || (uint64_t)width * height > PHF_MAX_PIXELS) {
         return NULL;
     }
+    phf_mode_t mode = options ? options->mode : PHF_MODE_AUTO;
+    phf_effort_t effort = options ? options->effort : PHF_EFFORT_BEST;
+    if ((mode != PHF_MODE_AUTO && mode != PHF_MODE_MED && mode != PHF_MODE_PALETTE)
+        || (effort != PHF_EFFORT_BEST && effort != PHF_EFFORT_FAST)) {
+        return NULL;
+    }
 
     size_t payload_sz = 0;
-    int decorrelate = 1; /* channels is always 3 or 4 here */
-    uint8_t *payload = nhf3_encode(pixels, (int)width, (int)height, (int)channels, (int)channels, NULL, NHF3_PRED_MED, decorrelate, &payload_sz, NULL);
+    int palette = 0;
+    uint8_t *payload = encode_payload(pixels, width, height, channels, mode,
+                                      effort == PHF_EFFORT_FAST ? NHF3_EFFORT_FAST : NHF3_EFFORT_BEST,
+                                      &payload_sz, &palette);
     if (!payload) return NULL;
     if (payload_sz > 0xFFFFFFFFu) { nhf3_free(payload); return NULL; }
 
@@ -1487,8 +1598,8 @@ PHF_API uint8_t* phf_encode_memory(const uint8_t *pixels, uint32_t width, uint32
     memcpy(phf_buf, "PHF1", 4);
     phf_buf[4] = (uint8_t)PHF_VERSION;
     phf_buf[5] = channels;
-    phf_buf[6] = (uint8_t)((channels == 4 ? PHF_FLAG_ALPHA : 0) | PHF_FLAG_MED
-                           | (decorrelate ? PHF_FLAG_DECORR : 0) | PHF_FLAG_CRC32);
+    phf_buf[6] = (uint8_t)((channels == 4 ? PHF_FLAG_ALPHA : 0) | PHF_FLAG_CRC32
+                           | (palette ? 0 : PHF_FLAG_MED | PHF_FLAG_DECORR));
     phf_buf[7] = 0; /* reserved */
     put_le32(phf_buf + 8, width);
     put_le32(phf_buf + 12, height);
@@ -1536,10 +1647,11 @@ PHF_API int phf_decode_memory(const uint8_t *phf_data, size_t phf_size, uint8_t 
     return phf_map_nhf3_error(nhf3_decode(payload, info.payload_size, dst_pixels, (int)width, (int)height, (int)stride));
 }
 
-PHF_API int phf_write_file(const char *filepath, const uint8_t *pixels, uint32_t width, uint32_t height, uint8_t channels) {
+PHF_API int phf_write_file(const char *filepath, const uint8_t *pixels, uint32_t width, uint32_t height,
+                           uint8_t channels, const phf_encode_options_t *options) {
     if (!filepath || !pixels) return PHF_ERR_ARG;
     size_t out_sz = 0;
-    uint8_t *phf_bytes = phf_encode_memory(pixels, width, height, channels, &out_sz);
+    uint8_t *phf_bytes = phf_encode_memory(pixels, width, height, channels, options, &out_sz);
     if (!phf_bytes) return PHF_ERR_ARG;
 
     FILE *fp = fopen(filepath, "wb");
