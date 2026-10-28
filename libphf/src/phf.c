@@ -1372,6 +1372,7 @@ NHF3_API int nhf3_decode(const uint8_t *in, size_t n, uint8_t *dst, int w, int h
                 d[0] = (uint8_t)(d[0] + p0[i] + g);
                 d[1] = (uint8_t)(d[1] + g);
                 d[2] = (uint8_t)(d[2] + p2[i] + g);
+                if (stride >= 4) d[3] = 255;
             }
         } else {
 #ifdef _OPENMP
@@ -1383,6 +1384,7 @@ NHF3_API int nhf3_decode(const uint8_t *in, size_t n, uint8_t *dst, int w, int h
                 d[0] = (uint8_t)(p0[i] + g);
                 d[1] = g;
                 d[2] = (uint8_t)(p2[i] + g);
+                if (stride >= 4) d[3] = 255;
             }
         }
     } else {
@@ -1394,6 +1396,11 @@ NHF3_API int nhf3_decode(const uint8_t *in, size_t n, uint8_t *dst, int w, int h
             const uint8_t *p = planes + (size_t)c * cnt;
             if (pf) for (uint32_t i = 0; i < cnt; i++) dst[(size_t)i * stride + c] = (uint8_t)(dst[(size_t)i * stride + c] + p[i]);
             else    for (uint32_t i = 0; i < cnt; i++) dst[(size_t)i * stride + c] = p[i];
+        }
+        if (ch == 3 && stride >= 4) {
+            for (uint32_t i = 0; i < cnt; i++) {
+                dst[(size_t)i * stride + 3] = 255;
+            }
         }
     }
     free(planes);
@@ -1475,19 +1482,23 @@ PHF_API uint8_t* phf_encode_memory(const uint8_t *pixels, uint32_t width, uint32
     return phf_buf;
 }
 
-PHF_API int phf_decode_memory(const uint8_t *phf_data, size_t phf_size, uint8_t *dst_pixels, uint32_t width, uint32_t height, uint8_t channels) {
+PHF_API int phf_decode_memory(const uint8_t *phf_data, size_t phf_size, uint8_t *dst_pixels, uint32_t width, uint32_t height, uint8_t stride) {
     phf_info_t info;
     int rc = phf_probe_memory(phf_data, phf_size, &info);
     if (rc != 0) return rc;
     
-    if (info.width != width || info.height != height || info.channels != channels) {
+    if (info.width != width || info.height != height) {
         return -4; /* Mismatch dimensions */
+    }
+    if (stride == 0) stride = info.channels;
+    if (stride < info.channels) {
+        return -4; /* Stride cannot be less than source channels */
     }
     if (phf_size < 20 + info.payload_size) {
         return -5; /* Truncated */
     }
     
-    return nhf3_decode(phf_data + 20, info.payload_size, dst_pixels, (int)width, (int)height, (int)channels);
+    return nhf3_decode(phf_data + 20, info.payload_size, dst_pixels, (int)width, (int)height, (int)stride);
 }
 
 PHF_API int phf_write_file(const char *filepath, const uint8_t *pixels, uint32_t width, uint32_t height, uint8_t channels) {

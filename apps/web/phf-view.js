@@ -66,8 +66,8 @@ export async function decodePHF(arrayBuffer) {
     const dstPtr = mod._malloc(outBytes);
 
     const t0 = performance.now();
-    // Call into WASM decoder
-    const rc = mod._phf_decode_memory(srcPtr, n, dstPtr, width, height, channels);
+    // Call into WASM decoder with stride = 4 (Canvas RGBA)
+    const rc = mod._phf_decode_memory(srcPtr, n, dstPtr, width, height, 4);
     const decodeTimeMs = performance.now() - t0;
 
     if (rc !== 0) {

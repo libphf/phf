@@ -51,6 +51,10 @@ PHF_API uint8_t* phf_encode_memory(
 /**
  * phf_decode_memory:
  *   Decodes a complete in-memory PHF file buffer into destination pixel buffer.
+ *   stride: Byte step between consecutive pixels in dst_pixels.
+ *           Common values: 3 (tightly packed RGB) or 4 (RGBA / Canvas / Direct3D / Vulkan).
+ *           If 0 is passed, stride defaults to the PHF file's native channel count.
+ *           If stride >= 4 and source is RGB (channels == 3), alpha is set to 255 (opaque).
  *   Returns 0 on success, or a negative error code.
  */
 PHF_API int phf_decode_memory(
@@ -59,7 +63,7 @@ PHF_API int phf_decode_memory(
     uint8_t *dst_pixels,
     uint32_t width,
     uint32_t height,
-    uint8_t channels
+    uint8_t stride
 );
 
 /**
