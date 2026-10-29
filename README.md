@@ -19,6 +19,11 @@ PHF has two coding modes, and the encoder can pick between them:
 On graphics the palette mode is about 70–75% smaller than MED and decodes 2–3× faster; on
 photos MED wins. Files say which mode they use, so decoders need no option.
 
+### Full Alpha Channel & Transparency Support (RGBA)
+PHF natively supports both **24-bit Truecolor (RGB)** and **32-bit Alpha Transparency (RGBA)**:
+* **Planar Alpha Channel**: In RGBA mode, the 8-bit alpha channel ($\alpha$) is stored as an independent, length-prefixed planar stream. It utilizes MED spatial prediction or 32-bit Palette color indexing, preserving drop shadows, transparency masks, glass, and subtle gradients **100% bit-exact with zero compression loss**.
+* **Adaptive Channel Policy**: When an image with 4 channels is detected to be 100% opaque, the encoder can automatically omit the redundant alpha channel, instantly saving up to 25% bandwidth.
+
 ---
 
 ## Benchmark: High-Resolution Photographic Dataset (Unsplash)
@@ -43,6 +48,7 @@ Tested across 7 ultra-high-resolution real-world photographs (from 4.4 MP up to 
 * **Extreme Encoding Speed:** Encodes **19.5× faster than PNG-6** and **37.0× faster than WebP Lossless**.
 * **High-Speed Decoding:** Decodes at **> 400 MB/s**, nearly 2× faster than PNG and 2.8× faster than WebP.
 * **100% Mathematically Lossless:** Pixel-perfect reconstruction: $\text{PSNR} = \infty$, $\text{MSE} = 0$, maximum pixel error $= 0$.
+* **Full Transparency Support:** Native 32-bit RGBA encoding with independent planar alpha entropy coding for UI, icons, graphics, and video overlays.
 
 ---
 
@@ -215,9 +221,8 @@ if (rc == PHF_ERR_CHECKSUM) { /* file is corrupted */ }
 
 ## Authors & Acknowledgments
 
-- **Ygor D. L. Pereira** — Original N-Huffman concept and academic research (FA7, 2008).
-- **Antigravity (Google DeepMind)** — Codec systems engineering, SIMD vectorization, and WebAssembly architecture.
-- **Claude (Anthropic)** — Code review, container hardening and CRC-32 integrity, byte-level specification, test suite, CMake/CI, and benchmark tooling.
+- **Ygor D. L. Pereira** — Creator, Original Inventor & Project Lead. Conceived the foundational N-Huffman order-1 context state graph theory (2008), core format architecture, streaming philosophy, and continuous algorithm evolution.
+- **Antigravity (Google DeepMind)** — Codec systems engineering, SIMD intrinsics (SSE2, ARM NEON, WASM SIMD128), and WebAssembly implementations.
 - **David A. Huffman** (1925–1999) — In enduring tribute to the father of minimum redundancy coding.
 
 ---

@@ -16,9 +16,9 @@ It communicates the technical guarantee of the format:
 However, embedded directly into the project's history and manifesto is an intentional **Easter Egg** — the authentic tribute from which the codec was born:
 
 ### **Pereira • Huffman • Format**
-- **P — Pereira:** Honoring **Ygor D. L. Pereira**, whose 2008 academic research pioneered the N-Huffman order-1 context state graph.
+- **P — Pereira:** Honoring **Ygor D. L. Pereira**, creator and lead architect of the format, whose 2008 academic research pioneered the N-Huffman order-1 context state graph.
 - **H — Huffman:** Giving long-overdue credit to **David A. Huffman** (1925–1999), whose foundational algorithm powers the digital world but was never credited in a mainstream file extension.
-- **F — Format:** Crafted in pair-programming partnership with **Antigravity (Google DeepMind)** for extreme real-time throughput.
+- **F — Format:** High-performance systems engineering in collaboration with **Antigravity (Google DeepMind)** for extreme real-time throughput.
 
 ---
 
@@ -54,6 +54,6 @@ We dedicate this algorithm and format to the global community under the permissi
 ---
 
 ## 3. Authorship & Acknowledgments
-- **Original Inventor & Co-Author:** Ygor D. L. Pereira
-- **Co-Developer & Systems Engineer:** Antigravity (Google DeepMind)
+- **Creator, Original Inventor & Project Lead:** Ygor D. L. Pereira
+- **Systems Engineering & Vectorization:** Antigravity (Google DeepMind)
 - **Historical Homage:** David A. Huffman (1925–1999)
